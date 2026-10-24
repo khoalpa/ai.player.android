@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="AppTheme" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">@color/ai_background</item>
+        <item name="android:navigationBarColor">@color/ai_background</item>
+        <item name="android:colorAccent">@color/ai_primary</item>
+        <item name="android:windowBackground">@color/shared_bg</item>
+        <item name="android:textColorPrimary">@color/shared_text</item>
+        <item name="android:textColorSecondary">@color/shared_muted</item>
+    </style>
+</resources>

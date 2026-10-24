@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ai_background">@color/shared_bg</color>
+    <color name="ai_surface">@color/shared_panel</color>
+    <color name="ai_text">@color/shared_text</color>
+    <color name="ai_muted">@color/shared_muted</color>
+    <color name="ai_primary">@color/shared_accent</color>
+    <color name="ai_primary_dark">@color/shared_accent_hover</color>
+    <color name="ai_ready">@color/shared_success</color>
+    <color name="ai_warning">@color/shared_warning</color>
+</resources>

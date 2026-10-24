@@ -1,0 +1,32 @@
+plugins {
+    id "com.android.application"
+}
+
+android {
+    namespace = "com.aiplayer.android"
+    compileSdk = 35
+
+    defaultConfig {
+        applicationId = "com.aiplayer.android"
+        minSdk = 26
+        targetSdk = 35
+        versionCode = 1
+        versionName = "0.1.0"
+    }
+}
+
+dependencies {
+    implementation "com.google.mlkit:translate:17.0.3"
+    implementation "com.google.mlkit:language-id:17.0.6"
+    implementation "androidx.media3:media3-exoplayer:1.8.0"
+    implementation "androidx.media3:media3-exoplayer-hls:1.8.0"
+    implementation "androidx.media3:media3-ui:1.8.0"
+    implementation "net.java.dev.jna:jna:5.18.1@aar"
+    implementation "com.alphacephei:vosk-android:0.3.75@aar"
+
+    testImplementation "junit:junit:4.13.2"
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.compilerArgs += ["-Xlint:deprecation"]
+}

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Generated from themes/tokens.json, v1.0.0 -->
+<resources>
+    <color name="shared_bg">#10141b</color>
+    <color name="shared_canvas">#0b0f15</color>
+    <color name="shared_panel">#171e28</color>
+    <color name="shared_surface">#202a37</color>
+    <color name="shared_raised">#293647</color>
+    <color name="shared_text">#f2f5fa</color>
+    <color name="shared_muted">#aab7c9</color>
+    <color name="shared_disabled">#8897aa</color>
+    <color name="shared_border">#48596e</color>
+    <color name="shared_border_subtle">#2c394b</color>
+    <color name="shared_border_strong">#7b8da3</color>
+    <color name="shared_accent">#8ab8ff</color>
+    <color name="shared_accent_hover">#b5d2ff</color>
+    <color name="shared_accent_ink">#102443</color>
+    <color name="shared_accent_soft">#223b60</color>
+    <color name="shared_success">#7cdda0</color>
+    <color name="shared_success_soft">#153424</color>
+    <color name="shared_warning">#ffd487</color>
+    <color name="shared_warning_soft">#3b2d16</color>
+    <color name="shared_danger">#ff9b9b</color>
+    <color name="shared_danger_soft">#42242b</color>
+    <color name="shared_info">#a8caff</color>
+    <color name="shared_info_soft">#1d3353</color>
+    <color name="shared_overlay">#000000bb</color>
+    <color name="shared_shadow_color">#00000088</color>
+</resources>

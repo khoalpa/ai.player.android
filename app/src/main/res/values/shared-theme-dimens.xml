@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <dimen name="shared_control_height">48dp</dimen>
+    <dimen name="shared_space">12dp</dimen>
+    <dimen name="shared_corner">8dp</dimen>
+</resources>

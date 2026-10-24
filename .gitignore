@@ -1,0 +1,10 @@
+.gradle/
+build/
+local.properties
+*.iml
+
+app/build/
+.idea/
+
+# Local rollback copies for AI Themes
+.theme-backups/
