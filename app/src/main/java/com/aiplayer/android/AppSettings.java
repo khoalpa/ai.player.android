@@ -11,8 +11,6 @@ final class AppSettings {
 
     String sourceLanguage = "ja";
     String targetLanguage = "vi";
-    boolean showTargetSubtitle = true;
-    boolean dubbingEnabled = false;
     int sourceVolume = 70;
     int dubbingVolume = 100;
 
@@ -21,8 +19,6 @@ final class AppSettings {
         AppSettings settings = new AppSettings();
         settings.sourceLanguage = prefs.getString(SOURCE_LANGUAGE, settings.sourceLanguage);
         settings.targetLanguage = prefs.getString(TARGET_LANGUAGE, settings.targetLanguage);
-        settings.showTargetSubtitle = prefs.getBoolean("showTargetSubtitle", settings.showTargetSubtitle);
-        settings.dubbingEnabled = prefs.getBoolean("dubbingEnabled", settings.dubbingEnabled);
         settings.sourceVolume = prefs.getInt("sourceVolume", settings.sourceVolume);
         settings.dubbingVolume = prefs.getInt("dubbingVolume", settings.dubbingVolume);
         if (!prefs.getBoolean(JAPANESE_DEFAULT_MIGRATED, false)
@@ -42,8 +38,6 @@ final class AppSettings {
                 .edit()
                 .putString(SOURCE_LANGUAGE, sourceLanguage)
                 .putString(TARGET_LANGUAGE, targetLanguage)
-                .putBoolean("showTargetSubtitle", showTargetSubtitle)
-                .putBoolean("dubbingEnabled", dubbingEnabled)
                 .putInt("sourceVolume", sourceVolume)
                 .putInt("dubbingVolume", dubbingVolume)
                 .putBoolean(JAPANESE_DEFAULT_MIGRATED, true)

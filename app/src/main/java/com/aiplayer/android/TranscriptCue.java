@@ -5,20 +5,15 @@ final class TranscriptCue {
     final long endMs;
     final String sourceText;
     String targetText;
-    boolean spoken;
+
+    boolean hasTranslation() {
+        return targetText != null && !targetText.trim().isEmpty();
+    }
 
     TranscriptCue(long startMs, long endMs, String sourceText) {
         this.startMs = startMs;
         this.endMs = endMs;
         this.sourceText = sourceText;
         this.targetText = "";
-        this.spoken = false;
-    }
-
-    String displayText(boolean target) {
-        if (target && targetText != null && !targetText.trim().isEmpty()) {
-            return targetText;
-        }
-        return sourceText;
     }
 }

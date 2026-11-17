@@ -19,7 +19,7 @@ import java.util.zip.ZipInputStream;
 
 final class VoskModelStore {
     interface Callback {
-        void onReady(Model model);
+        void onReady(Model model, String source);
 
         void onError(String message);
 
@@ -33,11 +33,19 @@ final class VoskModelStore {
         this.context = context.getApplicationContext();
     }
 
+    static String modelVersion(String sourceLanguage) {
+        return specFor(sourceLanguage).url;
+    }
+
+    String modelKey(String sourceLanguage) {
+        return specFor(sourceLanguage).assetName;
+    }
+
     void prepare(String sourceLanguage, Callback callback) {
         ModelSpec spec = specFor(sourceLanguage);
         File modelDir = modelDir(spec.assetName);
         if (isModelReady(modelDir)) {
-            executor.execute(() -> openModel(modelDir, callback));
+            executor.execute(() -> openModel(modelDir, callback, "disk"));
             return;
         }
         if (assetExists(spec.assetName)) {
@@ -46,7 +54,7 @@ final class VoskModelStore {
                     context,
                     spec.assetName,
                     "vosk-" + spec.assetName,
-                    callback::onReady,
+                    model -> callback.onReady(model, "assets"),
                     exception -> callback.onError("Không nạp được model Vosk từ assets: " + exception.getMessage())
             );
             return;
@@ -113,16 +121,16 @@ final class VoskModelStore {
             if (!isModelReady(modelDir)) {
                 throw new IllegalStateException("Model tải về thiếu conf/model.conf");
             }
-            openModel(modelDir, callback);
+            openModel(modelDir, callback, "download");
         } catch (Exception ex) {
             deleteRecursive(tempDir);
             callback.onError("Không tải được model Vosk: " + ex.getMessage());
         }
     }
 
-    private void openModel(File modelDir, Callback callback) {
+    private void openModel(File modelDir, Callback callback, String source) {
         try {
-            callback.onReady(new Model(modelDir.getAbsolutePath()));
+            callback.onReady(new Model(modelDir.getAbsolutePath()), source);
         } catch (Exception ex) {
             callback.onError("Không mở được model Vosk: " + ex.getMessage());
         }
@@ -174,7 +182,7 @@ final class VoskModelStore {
         file.delete();
     }
 
-    private ModelSpec specFor(String sourceLanguage) {
+    private static ModelSpec specFor(String sourceLanguage) {
         String language = sourceLanguage == null ? "" : sourceLanguage.trim().toLowerCase(Locale.US);
         if ("ja".equals(language) || "jp".equals(language)) {
             return new ModelSpec("model-ja", "https://alphacephei.com/vosk/models/vosk-model-small-ja-0.22.zip");

@@ -43,24 +43,8 @@ public class TranscriptParserTest {
     }
 
     @Test
-    public void parsePlainTextCreatesSequentialCues() {
-        List<TranscriptCue> cues = TranscriptParser.parse("First sentence. Second sentence!");
-
-        assertEquals(2, cues.size());
-        assertEquals(0, cues.get(0).startMs);
-        assertEquals(cues.get(0).endMs, cues.get(1).startMs);
-        assertEquals("First sentence.", cues.get(0).sourceText);
-        assertEquals("Second sentence!", cues.get(1).sourceText);
-    }
-
-    @Test
-    public void parsePlainTextSplitsOnNewLines() {
-        List<TranscriptCue> cues = TranscriptParser.parse("First line\nSecond line\n\nThird line");
-
-        assertEquals(3, cues.size());
-        assertEquals("First line", cues.get(0).sourceText);
-        assertEquals(cues.get(0).endMs, cues.get(1).startMs);
-        assertEquals("Third line", cues.get(2).sourceText);
+    public void rejectsUntimedText() {
+        assertEquals(0, TranscriptParser.parse("Untimed text.").size());
     }
 
     @Test

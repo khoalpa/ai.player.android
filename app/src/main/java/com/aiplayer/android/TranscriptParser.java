@@ -17,11 +17,7 @@ final class TranscriptParser {
             normalized = normalized.replaceFirst("(?s)^WEBVTT.*?\\n\\n", "");
         }
 
-        List<TranscriptCue> cues = parseTimed(normalized);
-        if (!cues.isEmpty()) {
-            return cues;
-        }
-        return parsePlainText(normalized);
+        return parseTimed(normalized);
     }
 
     private static List<TranscriptCue> parseTimed(String content) {
@@ -64,22 +60,6 @@ final class TranscriptParser {
             if (text.length() > 0) {
                 cues.add(new TranscriptCue(start, end, text.toString()));
             }
-        }
-        return cues;
-    }
-
-    private static List<TranscriptCue> parsePlainText(String content) {
-        List<TranscriptCue> cues = new ArrayList<>();
-        String[] chunks = content.trim().split("(?<=[.!?。！？])\\s+|\\n+");
-        long start = 0;
-        for (String chunk : chunks) {
-            String text = chunk.trim();
-            if (text.isEmpty()) {
-                continue;
-            }
-            long duration = Math.max(2500, Math.min(9000, text.length() * 80L));
-            cues.add(new TranscriptCue(start, start + duration, text));
-            start += duration;
         }
         return cues;
     }

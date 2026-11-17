@@ -4,6 +4,7 @@ import com.google.android.gms.tasks.Task;
 import com.google.mlkit.common.model.DownloadConditions;
 import com.google.mlkit.nl.languageid.LanguageIdentification;
 import com.google.mlkit.nl.languageid.LanguageIdentifier;
+import com.google.mlkit.nl.translate.TranslateLanguage;
 import com.google.mlkit.nl.translate.Translation;
 import com.google.mlkit.nl.translate.Translator;
 import com.google.mlkit.nl.translate.TranslatorOptions;
@@ -59,7 +60,7 @@ final class TranslationClient {
                         return;
                     }
                     String targetLanguage = LanguageUtils.normalizeLanguage(settings.targetLanguage, "vi");
-                    if (sourceLanguage == null || sourceLanguage.equals("und")) {
+                    if (sourceLanguage == null || TranslateLanguage.fromLanguageTag(sourceLanguage) == null) {
                         callback.onFinished(0, "Không nhận diện được ngôn ngữ nguồn. Hãy nhập mã nguồn như ja, en, ko, zh.");
                         return;
                     }
@@ -167,7 +168,6 @@ final class TranslationClient {
                     })
                     .addOnFailureListener(ex -> {
                         state.failed++;
-                        callback.onTranslated(index, sourceText);
                         maybeReportProgress(callback, state);
                         translateNext(translator, languagePair, cues, callback, state);
                     });
@@ -176,7 +176,7 @@ final class TranslationClient {
         int completed = state.completed();
         callback.onProgress(completed, state.total, state.cached, state.skipped);
         callback.onFinished(
-                completed,
+                completed - state.failed,
                 "Đã dịch offline " + state.translated + "/" + state.total
                         + " đoạn, cache " + state.cached
                         + ", bỏ qua " + state.skipped
