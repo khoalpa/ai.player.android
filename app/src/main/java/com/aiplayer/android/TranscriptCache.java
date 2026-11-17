@@ -12,6 +12,7 @@ import org.json.JSONObject;
 
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
@@ -25,12 +26,11 @@ final class TranscriptCache {
         this.context = context.getApplicationContext();
     }
 
-    String videoKey(Uri uri, String language) {
-        String identity = videoIdentity(context, uri);
+    static String keyForIdentity(String identity, String language) {
         if (identity == null) return null;
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256").digest(
-                    ("1\n" + identity + "\n" + language + "\n" + VoskModelStore.modelVersion(language))
+                    ("2\n" + identity + "\n" + language + "\n" + VoskModelStore.modelVersion(language))
                             .getBytes(StandardCharsets.UTF_8));
             StringBuilder key = new StringBuilder(digest.length * 2);
             for (byte value : digest) {
@@ -43,17 +43,38 @@ final class TranscriptCache {
         }
     }
 
-    static String videoIdentity(Context context, Uri uri) {
+    static String videoIdentity(Context context, Uri uri, ReadCancellation cancellation) {
         String[] columns = {Document.COLUMN_SIZE, Document.COLUMN_LAST_MODIFIED};
-        try (Cursor row = context.getContentResolver().query(uri, columns, null, null, null)) {
-            if (row == null || !row.moveToFirst()) return null;
-            int size = row.getColumnIndex(Document.COLUMN_SIZE);
-            int modified = row.getColumnIndex(Document.COLUMN_LAST_MODIFIED);
-            if (size < 0 || modified < 0 || row.isNull(size) || row.isNull(modified)
-                    || row.getLong(size) <= 0 || row.getLong(modified) <= 0) return null;
-            return uri + "\n" + row.getLong(size) + "\n" + row.getLong(modified);
+        try (Cursor row = context.getContentResolver().query(uri, columns, null, null, null, cancellation.signal)) {
+            if (row != null && row.moveToFirst()) {
+                int size = row.getColumnIndex(Document.COLUMN_SIZE);
+                int modified = row.getColumnIndex(Document.COLUMN_LAST_MODIFIED);
+                if (size >= 0 && modified >= 0 && !row.isNull(size) && !row.isNull(modified)
+                        && row.getLong(size) > 0 && row.getLong(modified) > 0) {
+                    return uri + "\n" + row.getLong(size) + "\n" + row.getLong(modified);
+                }
+            }
+        } catch (Exception ex) {
+            // Providers may reject the requested metadata columns.
+        }
+        if (cancellation.isCancelled()) return null;
+        return contentIdentity(context, uri, cancellation);
+    }
+
+    // Runs on the session/cache IO executor. Hash the full file when metadata is
+    // unavailable so replacing content at the same URI cannot restore stale cues.
+    private static String contentIdentity(Context context, Uri uri, ReadCancellation cancellation) {
+        try (android.content.res.AssetFileDescriptor descriptor = context.getContentResolver()
+                .openAssetFileDescriptor(uri, "r", cancellation.signal)) {
+            if (descriptor == null) return null;
+            try (InputStream input = descriptor.createInputStream()) {
+                cancellation.register(input);
+                return uri + "\nsha256:" + ContentFingerprint.sha256(input, cancellation::isCancelled);
+            }
         } catch (Exception ex) {
             return null;
+        } finally {
+            cancellation.clear();
         }
     }
 

@@ -10,7 +10,7 @@ final class CueTimeline {
         String text(TranscriptCue cue) {
             if (cue == null || this == OFF) return "";
             if (this == SOURCE) return cue.sourceText;
-            return cue.hasTranslation() ? cue.targetText : cue.sourceText;
+            return cue.hasTranslation() ? cue.targetText : "";
         }
     }
 

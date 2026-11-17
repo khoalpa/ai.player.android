@@ -9,6 +9,8 @@ import org.vosk.android.StorageService;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.Locale;
@@ -19,6 +21,8 @@ import java.util.zip.ZipInputStream;
 
 final class VoskModelStore {
     interface Callback {
+        boolean isCancelled();
+
         void onReady(Model model, String source);
 
         void onError(String message);
@@ -28,6 +32,18 @@ final class VoskModelStore {
 
     private final Context context;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    private volatile HttpURLConnection activeConnection;
+
+    void cancel() {
+        HttpURLConnection connection = activeConnection;
+        if (connection != null) connection.disconnect();
+    }
+
+    private static void checkCancelled(Callback callback) throws InterruptedIOException {
+        if (callback.isCancelled() || Thread.currentThread().isInterrupted()) {
+            throw new InterruptedIOException("Model preparation cancelled");
+        }
+    }
 
     VoskModelStore(Context context) {
         this.context = context.getApplicationContext();
@@ -42,10 +58,23 @@ final class VoskModelStore {
     }
 
     void prepare(String sourceLanguage, Callback callback) {
+        if (callback.isCancelled()) return;
         ModelSpec spec = specFor(sourceLanguage);
         File modelDir = modelDir(spec.assetName);
         if (isModelReady(modelDir)) {
-            executor.execute(() -> openModel(modelDir, callback, "disk"));
+            executor.execute(() -> {
+                try {
+                    checkCancelled(callback);
+                    Model model = new Model(modelDir.getAbsolutePath());
+                    if (callback.isCancelled()) model.close();
+                    else callback.onReady(model, "disk");
+                } catch (Exception ex) {
+                    if (callback.isCancelled()) return;
+                    deleteRecursive(modelDir);
+                    callback.onStatus("Model Vosk bị lỗi. Đang tải lại...");
+                    downloadAndOpen(spec, modelDir, callback);
+                }
+            });
             return;
         }
         if (assetExists(spec.assetName)) {
@@ -54,8 +83,16 @@ final class VoskModelStore {
                     context,
                     spec.assetName,
                     "vosk-" + spec.assetName,
-                    model -> callback.onReady(model, "assets"),
-                    exception -> callback.onError("Không nạp được model Vosk từ assets: " + exception.getMessage())
+                    model -> {
+                        if (callback.isCancelled()) model.close();
+                        else callback.onReady(model, "assets");
+                    },
+                    exception -> {
+                        if (!callback.isCancelled()) executor.execute(() -> {
+                            callback.onStatus("Không nạp được model đóng gói. Đang tải model thay thế...");
+                            downloadAndOpen(spec, modelDir, callback);
+                        });
+                    }
             );
             return;
         }
@@ -64,35 +101,37 @@ final class VoskModelStore {
     }
 
     void close() {
+        cancel();
         executor.shutdownNow();
     }
 
     private void downloadAndOpen(ModelSpec spec, File modelDir, Callback callback) {
+        if (callback.isCancelled()) return;
         File tempDir = new File(modelDir.getParentFile(), modelDir.getName() + ".tmp");
         deleteRecursive(tempDir);
         tempDir.mkdirs();
+        HttpURLConnection conn = null;
         try {
-            HttpURLConnection conn = (HttpURLConnection) new URL(spec.url).openConnection();
+            checkCancelled(callback);
+            conn = (HttpURLConnection) new URL(spec.url).openConnection();
+            activeConnection = conn;
+            checkCancelled(callback);
             conn.setConnectTimeout(15000);
             conn.setReadTimeout(120000);
             conn.setRequestProperty("User-Agent", "AIPlayerAndroid/0.1");
-            int total = conn.getContentLength();
-            int downloaded = 0;
-            try (InputStream raw = conn.getInputStream();
+            long total = conn.getContentLengthLong();
+            try (InputStream raw = new ModelDownloadStream(conn.getInputStream(), total, callback::isCancelled,
+                    percent -> callback.onStatus("Đang tải và giải nén model Vosk " + spec.assetName + ": " + percent + "%"));
                  ZipInputStream zip = new ZipInputStream(raw)) {
                 ZipEntry entry;
                 byte[] buffer = new byte[64 * 1024];
                 while ((entry = zip.getNextEntry()) != null) {
+                    checkCancelled(callback);
                     String strippedName = stripTopFolder(entry.getName());
                     if (strippedName.isEmpty()) {
                         continue;
                     }
-                    File outFile = new File(tempDir, strippedName);
-                    String canonicalRoot = tempDir.getCanonicalPath();
-                    String canonicalOut = outFile.getCanonicalPath();
-                    if (!canonicalOut.startsWith(canonicalRoot)) {
-                        throw new IllegalStateException("Zip entry không hợp lệ");
-                    }
+                    File outFile = ModelArchive.destination(tempDir, strippedName);
                     if (entry.isDirectory()) {
                         outFile.mkdirs();
                         continue;
@@ -104,16 +143,15 @@ final class VoskModelStore {
                     try (FileOutputStream out = new FileOutputStream(outFile)) {
                         int read;
                         while ((read = zip.read(buffer)) != -1) {
+                            checkCancelled(callback);
                             out.write(buffer, 0, read);
-                            downloaded += read;
                         }
-                    }
-                    if (total > 0) {
-                        int percent = Math.min(99, (int) ((downloaded * 100L) / total));
-                        callback.onStatus("Đang tải model Vosk " + spec.assetName + ": " + percent + "%");
                     }
                 }
             }
+            checkCancelled(callback);
+            if (!isModelReady(tempDir)) throw new IOException("Model archive is incomplete");
+            callback.onStatus("Đang nạp model Vosk " + spec.assetName + "...");
             deleteRecursive(modelDir);
             if (!tempDir.renameTo(modelDir)) {
                 throw new IllegalStateException("Không lưu được model Vosk");
@@ -124,15 +162,23 @@ final class VoskModelStore {
             openModel(modelDir, callback, "download");
         } catch (Exception ex) {
             deleteRecursive(tempDir);
-            callback.onError("Không tải được model Vosk: " + ex.getMessage());
+            if (!callback.isCancelled()) callback.onError("Không tải được model Vosk: " + ex.getMessage());
+        } finally {
+            activeConnection = null;
+            if (conn != null) conn.disconnect();
         }
     }
 
     private void openModel(File modelDir, Callback callback, String source) {
         try {
-            callback.onReady(new Model(modelDir.getAbsolutePath()), source);
+            checkCancelled(callback);
+            Model model = new Model(modelDir.getAbsolutePath());
+            if (callback.isCancelled()) model.close();
+            else callback.onReady(model, source);
         } catch (Exception ex) {
-            callback.onError("Không mở được model Vosk: " + ex.getMessage());
+            if (callback.isCancelled()) return;
+            deleteRecursive(modelDir);
+            callback.onError("Không mở được model Vosk. Hãy thử lại để tải lại model: " + ex.getMessage());
         }
     }
 
@@ -141,7 +187,8 @@ final class VoskModelStore {
     }
 
     private boolean isModelReady(File dir) {
-        return new File(dir, "conf/model.conf").exists();
+        File configuration = new File(dir, "conf/model.conf");
+        return configuration.isFile() && configuration.length() > 0;
     }
 
     private boolean assetExists(String name) {

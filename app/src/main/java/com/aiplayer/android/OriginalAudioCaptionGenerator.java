@@ -75,6 +75,11 @@ final class OriginalAudioCaptionGenerator {
             releaseModel();
             modelStore.prepare(sourceLanguage, new VoskModelStore.Callback() {
                 @Override
+                public boolean isCancelled() {
+                    return callback.isCancelled();
+                }
+
+                @Override
                 public void onReady(Model model, String source) {
                     try {
                         executor.execute(() -> {
@@ -106,11 +111,16 @@ final class OriginalAudioCaptionGenerator {
     }
 
     void close() {
+        modelStore.cancel();
         executor.execute(() -> {
             modelStore.close();
             releaseModel();
         });
         executor.shutdown();
+    }
+
+    void cancel() {
+        modelStore.cancel();
     }
 
     private void releaseModel() {
@@ -129,7 +139,7 @@ final class OriginalAudioCaptionGenerator {
         List<TranscriptCue> cues = new ArrayList<>();
         MediaExtractor extractor = new MediaExtractor();
         MediaCodec decoder = null;
-        Recognizer recognizer = null;
+        PcmRecognition recognition = new PcmRecognition(model);
         try {
             extractor.setDataSource(context, videoUri, null);
             MediaFormat audioFormat = extractor.getTrackFormat(audioTrack);
@@ -138,37 +148,27 @@ final class OriginalAudioCaptionGenerator {
                 callback.onFinished(cues, "Video này không có track âm thanh để tạo caption.");
                 return;
             }
-            int sampleRate = audioFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)
-                    ? audioFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-                    : 16000;
             int channelCount = audioFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)
                     ? Math.max(1, audioFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT))
                     : 1;
             extractor.selectTrack(audioTrack);
-            long trackOffsetMs = Math.max(0L, extractor.getSampleTime() / 1000L);
             decoder = MediaCodec.createDecoderByType(mime);
             decoder.configure(audioFormat, null, null, 0);
             decoder.start();
 
             timing.codec += SystemClock.elapsedRealtimeNanos() - started;
-            started = SystemClock.elapsedRealtimeNanos();
-            recognizer = new Recognizer(model, sampleRate);
-            recognizer.setWords(true);
-            timing.vosk += SystemClock.elapsedRealtimeNanos() - started;
-            long endMs = decodeAndRecognize(extractor, decoder, recognizer, cues, callback,
-                    channelCount, trackOffsetMs, timing);
+            long endMs = decodeAndRecognize(extractor, decoder, recognition, cues, callback,
+                    channelCount, timing);
             if (callback.isCancelled() || Thread.currentThread().isInterrupted()) {
                 outcome = "cancelled";
                 return;
             }
             started = SystemClock.elapsedRealtimeNanos();
-            addResultCue(cues, recognizer.getFinalResult(), Math.max(endMs, lastCueEnd(cues)));
+            if (recognition.recognizer != null) {
+                addResultCue(cues, recognition.recognizer.getFinalResult(), Math.max(endMs, lastCueEnd(cues)), recognition.timestamps);
+            }
             timing.vosk += SystemClock.elapsedRealtimeNanos() - started;
             recordFirstCue(cues, timing);
-            if (trackOffsetMs > 0) {
-                cues.replaceAll(cue -> new TranscriptCue(
-                        cue.startMs + trackOffsetMs, cue.endMs + trackOffsetMs, cue.sourceText));
-            }
             outcome = cues.isEmpty() ? "empty" : "complete";
             callback.onFinished(cues, cues.isEmpty()
                     ? "Không nhận được lời nói từ âm gốc."
@@ -183,9 +183,7 @@ final class OriginalAudioCaptionGenerator {
                 }
                 decoder.release();
             }
-            if (recognizer != null) {
-                recognizer.close();
-            }
+            recognition.close();
             extractor.release();
             Log.i("TranscriptTiming", "outcome=" + outcome + " model=" + modelSource
                     + " modelMs=" + modelTime / 1_000_000L
@@ -201,11 +199,11 @@ final class OriginalAudioCaptionGenerator {
     private long decodeAndRecognize(
             MediaExtractor extractor,
             MediaCodec decoder,
-            Recognizer recognizer,
+            PcmRecognition recognition,
             List<TranscriptCue> cues,
             Callback callback,
-            int channelCount, long trackOffsetMs, Timing timing
-    ) {
+            int channelCount, Timing timing
+    ) throws java.io.IOException {
         MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
         boolean inputDone = false;
         boolean outputDone = false;
@@ -239,16 +237,17 @@ final class OriginalAudioCaptionGenerator {
             timing.codec += SystemClock.elapsedRealtimeNanos() - started;
             if (outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                 MediaFormat outputFormat = decoder.getOutputFormat();
+                recognition.configure(outputFormat);
                 channelCount = outputFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT);
-                if (outputFormat.containsKey(MediaFormat.KEY_PCM_ENCODING)
-                        && outputFormat.getInteger(MediaFormat.KEY_PCM_ENCODING)
-                        != android.media.AudioFormat.ENCODING_PCM_16BIT) {
-                    throw new IllegalStateException("Định dạng PCM của track chưa được hỗ trợ.");
-                }
             }
             if (outputIndex >= 0) {
                 ByteBuffer outputBuffer = decoder.getOutputBuffer(outputIndex);
                 if (outputBuffer != null && info.size > 0) {
+                    if (recognition.recognizer == null) {
+                        MediaFormat outputFormat = decoder.getOutputFormat();
+                        recognition.configure(outputFormat);
+                        channelCount = outputFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT);
+                    }
                     started = SystemClock.elapsedRealtimeNanos();
                     outputBuffer.position(info.offset);
                     outputBuffer.limit(info.offset + info.size);
@@ -261,15 +260,17 @@ final class OriginalAudioCaptionGenerator {
                         outputBuffer.get(pcm, 0, pcmSize);
                     }
                     timing.pcm += SystemClock.elapsedRealtimeNanos() - started;
-                    lastTimeMs = Math.max(lastTimeMs, info.presentationTimeUs / 1000L - trackOffsetMs);
+                    recognition.timestamps.append(info.presentationTimeUs, pcmSize / 2, recognition.sampleRate);
+                    lastTimeMs = Math.max(lastTimeMs, info.presentationTimeUs / 1000L
+                            + (pcmSize / 2) * 1000L / recognition.sampleRate);
                     if (lastTimeMs - lastStatusMs >= 5000L) {
                         lastStatusMs = lastTimeMs;
                         callback.onStatus("Dang nhan dang am goc " + formatTime(lastTimeMs) + "...");
                     }
                     timing.audioMs = lastTimeMs;
                     started = SystemClock.elapsedRealtimeNanos();
-                    if (recognizer.acceptWaveForm(pcm, pcmSize)) {
-                        addResultCue(cues, recognizer.getResult(), lastTimeMs);
+                    if (recognition.recognizer.acceptWaveForm(pcm, pcmSize)) {
+                        addResultCue(cues, recognition.recognizer.getResult(), lastTimeMs, recognition.timestamps);
                         recordFirstCue(cues, timing);
                     }
                     timing.vosk += SystemClock.elapsedRealtimeNanos() - started;
@@ -280,8 +281,7 @@ final class OriginalAudioCaptionGenerator {
                         List<TranscriptCue> batch = new ArrayList<>(stable - published);
                         for (int i = published; i < stable; i++) {
                             TranscriptCue cue = cues.get(i);
-                            batch.add(new TranscriptCue(cue.startMs + trackOffsetMs,
-                                    cue.endMs + trackOffsetMs, cue.sourceText));
+                            batch.add(new TranscriptCue(cue.startMs, cue.endMs, cue.sourceText));
                         }
                         published = stable;
                         lastPublishMs = now;
@@ -297,7 +297,41 @@ final class OriginalAudioCaptionGenerator {
         return lastTimeMs;
     }
 
-    private void addResultCue(List<TranscriptCue> cues, String resultJson, long endMs) {
+    private static final class PcmRecognition {
+        private final Model model;
+        private Recognizer recognizer;
+        private int sampleRate;
+        private final AudioTimestampMap timestamps = new AudioTimestampMap();
+
+        PcmRecognition(Model model) {
+            this.model = model;
+        }
+
+        void configure(MediaFormat format) throws java.io.IOException {
+            int rate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE);
+            int channels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT);
+            if (rate <= 0 || channels <= 0) throw new java.io.IOException("Invalid PCM format");
+            if (format.containsKey(MediaFormat.KEY_PCM_ENCODING)
+                    && format.getInteger(MediaFormat.KEY_PCM_ENCODING)
+                    != android.media.AudioFormat.ENCODING_PCM_16BIT) {
+                throw new java.io.IOException("Unsupported PCM encoding");
+            }
+            if (recognizer != null && rate != sampleRate) {
+                throw new java.io.IOException("PCM sample rate changed during recognition");
+            }
+            if (recognizer == null) {
+                recognizer = new Recognizer(model, rate);
+                sampleRate = rate;
+                recognizer.setWords(true);
+            }
+        }
+
+        void close() {
+            if (recognizer != null) recognizer.close();
+        }
+    }
+
+    private void addResultCue(List<TranscriptCue> cues, String resultJson, long endMs, AudioTimestampMap timestamps) {
         try {
             JSONObject result = new JSONObject(resultJson);
             String text = result.optString("text", "").trim();
@@ -307,7 +341,7 @@ final class OriginalAudioCaptionGenerator {
             JSONArray words = result.optJSONArray("result");
             if (words != null && words.length() > 0) {
                 int before = cues.size();
-                addWordTimedCues(cues, words);
+                addWordTimedCues(cues, words, timestamps);
                 if (cues.size() > before) {
                     trimOverlaps(cues, before);
                     return;
@@ -320,7 +354,7 @@ final class OriginalAudioCaptionGenerator {
         }
     }
 
-    private void addWordTimedCues(List<TranscriptCue> cues, JSONArray words) {
+    private void addWordTimedCues(List<TranscriptCue> cues, JSONArray words, AudioTimestampMap timestamps) {
         long groupStartMs = -1;
         long groupEndMs = -1;
         StringBuilder groupText = new StringBuilder();
@@ -335,6 +369,8 @@ final class OriginalAudioCaptionGenerator {
             }
             long startMs = Math.max(0, Math.round(word.optDouble("start", 0) * 1000.0));
             long endMs = Math.max(startMs + 80, Math.round(word.optDouble("end", startMs / 1000.0) * 1000.0));
+            startMs = timestamps.mediaMs(startMs);
+            endMs = Math.max(startMs + 80, timestamps.mediaEndMs(endMs));
             boolean shouldSplit = groupText.length() > 0
                     && (startMs - groupEndMs > MAX_WORD_GAP_MS
                     || endMs - groupStartMs > MAX_CUE_DURATION_MS

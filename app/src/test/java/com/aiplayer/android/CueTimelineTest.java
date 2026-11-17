@@ -58,11 +58,11 @@ public class CueTimelineTest {
     }
 
     @Test
-    public void translationModeFallsBackToSourceWhenTranslationIsMissing() {
+    public void translationModeDoesNotPresentSourceAsTranslation() {
         TranscriptCue cue = new TranscriptCue(0, 100, "source");
-        assertEquals("source", CueTimeline.Mode.TRANSLATION.text(cue));
+        assertEquals("", CueTimeline.Mode.TRANSLATION.text(cue));
         cue.targetText = null;
-        assertEquals("source", CueTimeline.Mode.TRANSLATION.text(cue));
+        assertEquals("", CueTimeline.Mode.TRANSLATION.text(cue));
         cue.targetText = "translated";
         assertEquals("translated", CueTimeline.Mode.TRANSLATION.text(cue));
         assertEquals("source", CueTimeline.Mode.SOURCE.text(cue));

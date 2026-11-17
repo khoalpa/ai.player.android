@@ -11,10 +11,8 @@ import android.view.Gravity;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.content.res.Configuration;
-import android.database.Cursor;
 import android.graphics.Color;
 import android.graphics.Typeface;
-import android.provider.OpenableColumns;
 import android.text.SpannableString;
 import android.text.Spanned;
 import android.text.TextUtils;
@@ -66,12 +64,17 @@ public final class MainActivity extends Activity {
 
     private AppSettings settings;
     private VideoSession session;
+    private VideoWork work;
     private PlaybackSessionStore sessionStore;
     private Uri savedVideo;
     private Uri currentVideo;
     private String currentVideoIdentity;
     private long savedTranscriptVersion = -1;
     private boolean destroyed;
+    private boolean started;
+    private final java.util.function.Consumer<String> workObserver = message -> {
+        if (started && !destroyed) updateControls(message);
+    };
     private int openRequest;
     private CueSpeech speech;
     private ExoPlayer player;
@@ -98,10 +101,12 @@ public final class MainActivity extends Activity {
         super.onCreate(state);
         settings = AppSettings.load(this);
         sessionStore = new PlaybackSessionStore(this);
-        session = new VideoSession(this, this::updateControls);
+        work = VideoWork.obtain(this);
+        session = work.session;
         player = new ExoPlayer.Builder(this).build();
         setContentView(buildContent());
         speech = new CueSpeech(this, this::onSpeechError);
+        work.attach(workObserver);
         applyVideoVolume();
         player.addListener(new Player.Listener() {
             @Override
@@ -122,7 +127,14 @@ public final class MainActivity extends Activity {
             }
         });
         updateControls("Chọn video để bắt đầu.");
-        sessionStore.load(null, restored -> {
+        if (session.videoUri() != null) {
+            PlaybackSessionStore.Snapshot retained = new PlaybackSessionStore.Snapshot(session.videoUri(),
+                    session.identity(), work.position, session.sourceLanguage, session.targetLanguage, session.cues);
+            retained.name = session.videoName;
+            savedVideo = hasPersistedRead(retained.uri) ? retained.uri : null;
+            openVideo(retained.uri, retained, false);
+            updateControls(work.status());
+        } else sessionStore.load(null, restored -> {
             if (destroyed || openRequest != 0 || restored == null) return;
             if (hasPersistedRead(restored.uri)) {
                 savedVideo = restored.uri;
@@ -233,8 +245,7 @@ public final class MainActivity extends Activity {
         stylePrimaryButton(primary);
         cancel = button(actions, "Hủy", () -> {
             offerTranslation = false;
-            session.cancel();
-            updateControls("Đã hủy tác vụ.");
+            work.cancelWork("Đã hủy tác vụ.");
         });
         shortcuts = row(root);
         setLeadingIcon(cancel, R.drawable.ic_control_cancel);
@@ -348,16 +359,6 @@ public final class MainActivity extends Activity {
         return button;
     }
 
-    private String videoName(Uri uri) {
-        try (Cursor cursor = getContentResolver().query(uri,
-                new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
-            if (cursor != null && cursor.moveToFirst() && !cursor.isNull(0)) return cursor.getString(0);
-        } catch (RuntimeException ignored) {
-            // Some document providers do not expose file metadata.
-        }
-        return "Video";
-    }
-
     @Override
     public void onBackPressed() {
         if (fullscreen) {
@@ -426,15 +427,19 @@ public final class MainActivity extends Activity {
     }
 
     private void openVideo(Uri uri, PlaybackSessionStore.Snapshot restored) {
+        openVideo(uri, restored, true);
+    }
+
+    private void openVideo(Uri uri, PlaybackSessionStore.Snapshot restored, boolean resetSession) {
         speech.stop();
         hasVideo = true;
         currentVideo = uri;
         currentVideoIdentity = restored == null ? null : restored.identity;
         offerTranslation = false;
-        title.setText(videoName(uri));
+        title.setText(restored == null ? "Video" : restored.name);
         player.setPlayWhenReady(false);
         player.setMediaItem(MediaItem.fromUri(uri), restored == null ? 0L : restored.position);
-        session.open(uri, settings.sourceLanguage, restored);
+        if (resetSession) session.open(uri, settings.sourceLanguage, restored);
         player.prepare();
         playerView.showController();
         if (getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE) {
@@ -447,6 +452,7 @@ public final class MainActivity extends Activity {
         if (currentVideo == null) return;
         long version = session.transcriptVersion();
         long position = player.getCurrentPosition();
+        work.position = position;
         if (savedTranscriptVersion == version) {
             sessionStore.savePosition(currentVideo, currentVideoIdentity, position);
         } else {
@@ -693,6 +699,9 @@ public final class MainActivity extends Activity {
         if (session.targetLanguage == null) showTranslation = false;
         transcriptLanguage.setEnabled(session.targetLanguage != null);
         transcriptLanguage.setText(showTranslation ? "Bản dịch" : "Bản gốc");
+        if (showTranslation && session.missingTranslations() > 0) {
+            transcriptLanguage.setText("Bản dịch · thiếu " + session.missingTranslations() + " đoạn");
+        }
         cueAdapter.notifyDataSetChanged();
     }
 
@@ -707,6 +716,9 @@ public final class MainActivity extends Activity {
             TranscriptCue cue = getItem(position);
             boolean active = position == activeRow;
             String line = showTranslation ? CueTimeline.Mode.TRANSLATION.text(cue) : cue.sourceText;
+            if (showTranslation && !cue.hasTranslation()) {
+                line = "Chưa có bản dịch\nBản gốc: " + cue.sourceText;
+            }
             view.setPadding(dp(12), dp(10), dp(12), dp(10));
             String timestamp = (active ? "Đang phát · " : "") + TranscriptParser.formatTime(cue.startMs);
             SpannableString content = new SpannableString(timestamp + "\n"
@@ -761,6 +773,13 @@ public final class MainActivity extends Activity {
         boolean hasCues = !session.cues.isEmpty();
         boolean translated = session.targetLanguage != null;
         boolean busy = session.busy;
+        if (busy && android.os.Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                        != android.content.pm.PackageManager.PERMISSION_GRANTED
+                && !getPreferences(MODE_PRIVATE).getBoolean("askedWorkNotifications", false)) {
+            getPreferences(MODE_PRIVATE).edit().putBoolean("askedWorkNotifications", true).apply();
+            requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 3);
+        }
         boolean workspace = hasVideo && !fullscreen;
         chrome.setVisibility(fullscreen ? View.GONE : View.VISIBLE);
         empty.setVisibility(hasVideo ? View.GONE : View.VISIBLE);
@@ -867,11 +886,14 @@ public final class MainActivity extends Activity {
     @Override
     protected void onStart() {
         super.onStart();
+        started = true;
+        if (hasVideo) updateControls(work.status());
         main.post(tick);
     }
 
     @Override
     protected void onStop() {
+        started = false;
         main.removeCallbacks(tick);
         player.pause();
         speech.stop();
@@ -884,7 +906,8 @@ public final class MainActivity extends Activity {
         destroyed = true;
         main.removeCallbacks(hideStatus);
         player.release();
-        session.close();
+        work.detach(workObserver);
+        sessionStore.close();
         speech.close();
         super.onDestroy();
     }

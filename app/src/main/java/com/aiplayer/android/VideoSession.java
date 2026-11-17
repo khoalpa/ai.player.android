@@ -15,6 +15,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.function.Consumer;
 
 final class VideoSession {
@@ -42,6 +43,10 @@ final class VideoSession {
     private TranslationClient translator;
     private volatile int revision;
     private Uri video;
+    private String videoIdentity;
+    String videoName = "Video";
+    private Future<?> pendingFile;
+    private ReadCancellation fileCancellation;
     private int videoRevision;
     private long transcriptVersion;
     private List<TranscriptCue> previousCues;
@@ -67,6 +72,8 @@ final class VideoSession {
     void open(Uri uri, String language, PlaybackSessionStore.Snapshot restored) {
         cancel();
         video = uri;
+        videoIdentity = restored == null ? null : restored.identity;
+        videoName = restored == null ? "Video" : restored.name;
         transcriptVersion++;
         tracks.clear();
         cues.clear();
@@ -81,11 +88,12 @@ final class VideoSession {
         }
         timeline.rebuild();
         boolean loadCache = cues.isEmpty();
-        files.execute(() -> scanTracks(uri, opened, request, language, loadCache));
+        String identity = videoIdentity;
+        pendingFile = files.submit(() -> scanTracks(uri, opened, request, language, loadCache, identity));
         changed.accept("Đang kiểm tra track âm thanh…");
     }
 
-    private void scanTracks(Uri uri, int opened, int request, String language, boolean loadCache) {
+    private void scanTracks(Uri uri, int opened, int request, String language, boolean loadCache, String identity) {
         List<AudioTrack> result = new ArrayList<>();
         MediaExtractor extractor = new MediaExtractor();
         String status;
@@ -109,7 +117,8 @@ final class VideoSession {
         } finally {
             extractor.release();
         }
-        List<TranscriptCue> saved = loadCache ? cache.readLatest(cache.videoKey(uri, language), result)
+        if (Thread.currentThread().isInterrupted()) return;
+        List<TranscriptCue> saved = loadCache ? cache.readLatest(TranscriptCache.keyForIdentity(identity, language), result)
                 : new ArrayList<>();
         String message = status;
         main.post(() -> {
@@ -129,13 +138,10 @@ final class VideoSession {
         int request = revision;
         busy = true;
         changed.accept("Đang chuẩn bị nhận dạng…");
+        if (request != revision) return;
         Uri input = video;
-        files.execute(() -> {
-            String key = cache.videoKey(input, language);
-            main.post(() -> {
-                if (request == revision) recognize(input, track, language, request, key);
-            });
-        });
+        String key = TranscriptCache.keyForIdentity(videoIdentity, language);
+        recognize(input, track, language, request, key);
     }
 
     private void recognize(Uri input, AudioTrack track, String language, int request, String key) {
@@ -186,9 +192,7 @@ final class VideoSession {
                     previousCues = null;
                     finishTranscript(request, result, language, status);
                     if (key != null && !result.isEmpty()) {
-                        files.execute(() -> {
-                            if (key.equals(cache.videoKey(input, language))) cache.write(key, track.index, result);
-                        });
+                        files.execute(() -> cache.write(key, track.index, result));
                     }
                 });
             }
@@ -200,11 +204,15 @@ final class VideoSession {
         int request = revision;
         busy = true;
         changed.accept("Đang đọc phụ đề…");
-        files.execute(() -> {
+        if (request != revision) return;
+        ReadCancellation cancellation = new ReadCancellation();
+        fileCancellation = cancellation;
+        pendingFile = files.submit(() -> {
             List<TranscriptCue> result = new ArrayList<>();
             String status;
             try (InputStream input = context.getContentResolver().openInputStream(uri)) {
                 if (input == null) throw new IllegalStateException("Không mở được tệp.");
+                cancellation.register(input);
                 ByteArrayOutputStream content = new ByteArrayOutputStream();
                 byte[] buffer = new byte[8192];
                 int count;
@@ -222,6 +230,8 @@ final class VideoSession {
                         : "Đã nhập " + result.size() + " đoạn phụ đề.";
             } catch (Exception ex) {
                 status = "Không đọc được phụ đề: " + ex.getMessage();
+            } finally {
+                cancellation.clear();
             }
             List<TranscriptCue> parsed = result;
             String message = status;
@@ -247,6 +257,9 @@ final class VideoSession {
     long transcriptVersion() {
         return transcriptVersion;
     }
+
+    Uri videoUri() { return video; }
+    String identity() { return videoIdentity; }
 
     List<TranscriptCue> completedCues() {
         return previousCues == null ? cues : previousCues;
@@ -277,23 +290,23 @@ final class VideoSession {
         settings.sourceLanguage = sourceLanguage;
         settings.targetLanguage = target;
 
-        boolean retry = target.equals(targetLanguage);
-        List<TranscriptCue> input = new ArrayList<>();
-        for (TranscriptCue cue : cues) {
-            if (!retry || !cue.hasTranslation()) input.add(cue);
-        }
+        TranslationBatch batch = new TranslationBatch(cues, targetLanguage, target);
+        List<TranscriptCue> input = batch.input;
         if (input.isEmpty()) {
             busy = false;
             changed.accept("Bản dịch đã đầy đủ.");
             return;
         }
-        String[] translations = new String[input.size()];
         translator = new TranslationClient();
         changed.accept("Đang chuẩn bị model dịch…");
+        if (request != revision) return;
         translator.translateCues(settings, input, new TranslationClient.Callback() {
             @Override
             public void onTranslated(int index, String text) {
-                if (request == revision) translations[index] = text;
+                if (request != revision) return;
+                batch.accept(index, text);
+                targetLanguage = target;
+                transcriptVersion++;
             }
 
             @Override
@@ -308,13 +321,6 @@ final class VideoSession {
             public void onFinished(int count, String status) {
                 if (request != revision) return;
                 busy = false;
-                if (count > 0) {
-                    transcriptVersion++;
-                    for (int i = 0; i < input.size(); i++) {
-                        input.get(i).targetText = translations[i];
-                    }
-                    targetLanguage = target;
-                }
                 changed.accept(status);
             }
         });
@@ -333,6 +339,9 @@ final class VideoSession {
     void cancel() {
         restorePreviousTranscript();
         revision++;
+        if (fileCancellation != null) fileCancellation.cancel();
+        if (pendingFile != null) pendingFile.cancel(true);
+        generator.cancel();
         progressTotal = 0;
         progressCompleted = 0;
         busy = false;
