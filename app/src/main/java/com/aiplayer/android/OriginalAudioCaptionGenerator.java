@@ -276,7 +276,7 @@ final class OriginalAudioCaptionGenerator {
                     // The next recognition result can still shorten the last cue.
                     int stable = cues.size() - 1;
                     long now = SystemClock.elapsedRealtime();
-                    if (stable > published && (published == 0 || now - lastPublishMs >= 350)) {
+                    if (stable > published && (published == 0 || now - lastPublishMs >= 750)) {
                         List<TranscriptCue> batch = new ArrayList<>(stable - published);
                         for (int i = published; i < stable; i++) {
                             TranscriptCue cue = cues.get(i);

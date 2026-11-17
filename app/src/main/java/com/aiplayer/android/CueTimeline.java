@@ -1,5 +1,6 @@
 package com.aiplayer.android;
 
+import java.util.Arrays;
 import java.util.List;
 
 final class CueTimeline {
@@ -14,7 +15,7 @@ final class CueTimeline {
     }
 
     private final List<TranscriptCue> cues;
-    private long[] latestEnd;
+    private long[] latestEnd = new long[0];
 
     CueTimeline(List<TranscriptCue> cues) {
         this.cues = cues;
@@ -22,9 +23,15 @@ final class CueTimeline {
     }
 
     void rebuild() {
-        latestEnd = new long[cues.size()];
-        long end = Long.MIN_VALUE;
-        for (int i = 0; i < cues.size(); i++) {
+        extendFrom(0);
+    }
+
+    void extendFrom(int first) {
+        if (cues.size() > latestEnd.length) {
+            latestEnd = Arrays.copyOf(latestEnd, Math.max(cues.size(), latestEnd.length * 2));
+        }
+        long end = first == 0 ? Long.MIN_VALUE : latestEnd[first - 1];
+        for (int i = first; i < cues.size(); i++) {
             end = Math.max(end, cues.get(i).endMs);
             latestEnd[i] = end;
         }

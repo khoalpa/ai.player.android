@@ -4,11 +4,34 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 
 import org.junit.Test;
 
 public class CueTimelineTest {
+    @Test
+    public void extendsIndexAcrossBatchesAndRebuildsAfterReplacingCues() {
+        TranscriptCue outer = new TranscriptCue(0, 500, "outer");
+        TranscriptCue inner = new TranscriptCue(100, 200, "inner");
+        List<TranscriptCue> cues = new ArrayList<>();
+        cues.add(outer);
+        CueTimeline timeline = new CueTimeline(cues);
+
+        cues.add(inner);
+        timeline.extendFrom(1);
+        assertSame(inner, timeline.at(150));
+        assertSame(outer, timeline.at(250));
+
+        cues.clear();
+        TranscriptCue replacement = new TranscriptCue(50, 80, "replacement");
+        cues.add(replacement);
+        timeline.rebuild();
+        assertSame(replacement, timeline.at(50));
+        assertNull(timeline.at(250));
+    }
+
     @Test
     public void resolvesCueAtBoundariesAndAfterSeekingBackward() {
         TranscriptCue first = new TranscriptCue(100, 200, "first");

@@ -26,6 +26,24 @@ final class TranscriptCache {
     }
 
     String videoKey(Uri uri, String language) {
+        String identity = videoIdentity(context, uri);
+        if (identity == null) return null;
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(
+                    ("1\n" + identity + "\n" + language + "\n" + VoskModelStore.modelVersion(language))
+                            .getBytes(StandardCharsets.UTF_8));
+            StringBuilder key = new StringBuilder(digest.length * 2);
+            for (byte value : digest) {
+                key.append(Character.forDigit((value & 0xff) >>> 4, 16));
+                key.append(Character.forDigit(value & 0xf, 16));
+            }
+            return key.toString();
+        } catch (Exception ex) {
+            return null;
+        }
+    }
+
+    static String videoIdentity(Context context, Uri uri) {
         String[] columns = {Document.COLUMN_SIZE, Document.COLUMN_LAST_MODIFIED};
         try (Cursor row = context.getContentResolver().query(uri, columns, null, null, null)) {
             if (row == null || !row.moveToFirst()) return null;
@@ -33,16 +51,7 @@ final class TranscriptCache {
             int modified = row.getColumnIndex(Document.COLUMN_LAST_MODIFIED);
             if (size < 0 || modified < 0 || row.isNull(size) || row.isNull(modified)
                     || row.getLong(size) <= 0 || row.getLong(modified) <= 0) return null;
-            String identity = "1\n" + uri + "\n" + row.getLong(size) + "\n" + row.getLong(modified)
-                    + "\n" + language + "\n" + VoskModelStore.modelVersion(language);
-            byte[] digest = MessageDigest.getInstance("SHA-256")
-                    .digest(identity.getBytes(StandardCharsets.UTF_8));
-            StringBuilder key = new StringBuilder(digest.length * 2);
-            for (byte value : digest) {
-                key.append(Character.forDigit((value & 0xff) >>> 4, 16));
-                key.append(Character.forDigit(value & 0xf, 16));
-            }
-            return key.toString();
+            return uri + "\n" + row.getLong(size) + "\n" + row.getLong(modified);
         } catch (Exception ex) {
             return null;
         }

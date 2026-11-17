@@ -22,10 +22,14 @@ final class VideoSession {
     static final class AudioTrack {
         final int index;
         final String label;
+        final String mime;
+        final String language;
 
-        AudioTrack(int index, String label) {
+        AudioTrack(int index, String label, String mime, String language) {
             this.index = index;
             this.label = label;
+            this.mime = mime;
+            this.language = language;
         }
     }
 
@@ -96,7 +100,7 @@ final class VideoSession {
                     if (trackLanguage != null && !trackLanguage.isEmpty()) {
                         label += " · " + trackLanguage;
                     }
-                    result.add(new AudioTrack(i, label));
+                    result.add(new AudioTrack(i, label, mime, trackLanguage));
                 }
             }
             status = result.isEmpty() ? "Video không có track âm thanh." : "Đã mở video.";
@@ -160,9 +164,16 @@ final class VideoSession {
                         sourceLanguage = language;
                         targetLanguage = null;
                     }
+                    int first = cues.size();
                     cues.addAll(batch);
-                    cues.sort(Comparator.comparingLong(cue -> cue.startMs));
-                    timeline.rebuild();
+                    for (int i = Math.max(1, first); i < cues.size(); i++) {
+                        if (cues.get(i - 1).startMs > cues.get(i).startMs) {
+                            cues.sort(Comparator.comparingLong(cue -> cue.startMs));
+                            first = 0;
+                            break;
+                        }
+                    }
+                    timeline.extendFrom(first);
                     changed.accept(null);
                 });
             }

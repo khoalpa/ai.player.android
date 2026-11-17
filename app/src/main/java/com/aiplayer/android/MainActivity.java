@@ -41,6 +41,9 @@ import android.widget.SeekBar;
 import android.widget.Spinner;
 import android.widget.TextView;
 
+import androidx.media3.common.C;
+import androidx.media3.common.Format;
+import androidx.media3.common.Tracks;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
@@ -65,8 +68,11 @@ public final class MainActivity extends Activity {
     private VideoSession session;
     private PlaybackSessionStore sessionStore;
     private Uri savedVideo;
+    private Uri currentVideo;
+    private String currentVideoIdentity;
     private long savedTranscriptVersion = -1;
     private boolean destroyed;
+    private int openRequest;
     private CueSpeech speech;
     private ExoPlayer player;
     private PlayerView playerView;
@@ -116,14 +122,13 @@ public final class MainActivity extends Activity {
             }
         });
         updateControls("Chọn video để bắt đầu.");
-        sessionStore.load(restored -> {
-            if (destroyed || hasVideo || restored == null) return;
+        sessionStore.load(null, restored -> {
+            if (destroyed || openRequest != 0 || restored == null) return;
             if (hasPersistedRead(restored.uri)) {
                 savedVideo = restored.uri;
-                savedTranscriptVersion = session.transcriptVersion() + 1;
                 openVideo(restored.uri, restored);
             } else {
-                sessionStore.clear();
+                sessionStore.clearRecent();
                 updateControls("Hãy chọn lại video để cấp quyền đọc.");
             }
         });
@@ -376,8 +381,15 @@ public final class MainActivity extends Activity {
         if (result != RESULT_OK || data == null || data.getData() == null) return;
         Uri uri = data.getData();
         if (request == OPEN_VIDEO) {
-            rememberVideo(uri, data.getFlags());
-            openVideo(uri, null);
+            int requestId = ++openRequest;
+            player.pause();
+            savePlaybackSession();
+            sessionStore.load(uri, restored -> {
+                if (destroyed || requestId != openRequest) return;
+                savePlaybackSession();
+                rememberVideo(uri, data.getFlags());
+                openVideo(uri, restored);
+            });
         } else if (request == OPEN_SUBTITLES && hasVideo) {
             LinearLayout form = form();
             List<String> codes = targetLanguages();
@@ -411,12 +423,13 @@ public final class MainActivity extends Activity {
                 // The provider may already have revoked the grant.
             }
         }
-        if (savedVideo == null) sessionStore.clear();
     }
 
     private void openVideo(Uri uri, PlaybackSessionStore.Snapshot restored) {
         speech.stop();
         hasVideo = true;
+        currentVideo = uri;
+        currentVideoIdentity = restored == null ? null : restored.identity;
         offerTranslation = false;
         title.setText(videoName(uri));
         player.setPlayWhenReady(false);
@@ -431,13 +444,13 @@ public final class MainActivity extends Activity {
     }
 
     private void savePlaybackSession() {
-        if (savedVideo == null) return;
+        if (currentVideo == null) return;
         long version = session.transcriptVersion();
         long position = player.getCurrentPosition();
         if (savedTranscriptVersion == version) {
-            sessionStore.savePosition(savedVideo, position);
+            sessionStore.savePosition(currentVideo, currentVideoIdentity, position);
         } else {
-            sessionStore.save(savedVideo, position, session);
+            sessionStore.save(currentVideo, currentVideoIdentity, position, session);
             savedTranscriptVersion = version;
         }
     }
@@ -522,9 +535,12 @@ public final class MainActivity extends Activity {
         List<VideoSession.AudioTrack> tracks = new ArrayList<>(session.tracks);
         if (tracks.isEmpty()) return;
         List<String> labels = new ArrayList<>();
-        for (VideoSession.AudioTrack track : tracks) labels.add(track.label);
+        int playing = playingTrack(tracks);
+        for (int i = 0; i < tracks.size(); i++) {
+            labels.add(tracks.get(i).label + (i == playing ? " (đang phát)" : ""));
+        }
         LinearLayout form = form();
-        Spinner track = selection(form, "Track âm thanh", labels, 0);
+        Spinner track = selection(form, "Track âm thanh", labels, Math.max(0, playing));
         Spinner language = languages(form, "Ngôn ngữ lời thoại", SOURCE_LANGUAGES, settings.sourceLanguage);
         showSheet(sheet("Tạo transcript", form).setNegativeButton("Hủy", null)
                 .setPositiveButton("Tạo transcript", (dialog, which) -> {
@@ -532,6 +548,36 @@ public final class MainActivity extends Activity {
                     settings.save(this);
                     session.generate(tracks.get(track.getSelectedItemPosition()), settings.sourceLanguage);
                 }));
+    }
+
+    private int playingTrack(List<VideoSession.AudioTrack> tracks) {
+        for (Tracks.Group group : player.getCurrentTracks().getGroups()) {
+            if (group.getType() != C.TRACK_TYPE_AUDIO) continue;
+            for (int i = 0; i < group.length; i++) {
+                if (!group.isTrackSelected(i)) continue;
+                Format format = group.getTrackFormat(i);
+                int match = -1;
+                for (int index = 0; index < tracks.size(); index++) {
+                    VideoSession.AudioTrack track = tracks.get(index);
+                    if (!track.mime.equals(format.sampleMimeType)
+                            || !audioLanguage(track.language).equals(audioLanguage(format.language))) continue;
+                    if (match != -1) return -1;
+                    match = index;
+                }
+                return match;
+            }
+        }
+        return -1;
+    }
+
+    private static String audioLanguage(String language) {
+        if (language == null || "und".equalsIgnoreCase(language)) return "";
+        Locale locale = Locale.forLanguageTag(language);
+        try {
+            return locale.getISO3Language();
+        } catch (java.util.MissingResourceException ex) {
+            return locale.getLanguage();
+        }
     }
 
     private void showSettings() {
@@ -574,7 +620,9 @@ public final class MainActivity extends Activity {
                 public void onNothingSelected(AdapterView<?> parent) {}
             });
         }
-        showSheet(sheet(voice ? "Đọc thành tiếng" : "Phụ đề", form).setNegativeButton("Hủy", null)
+        int missing = voice ? session.missingTranslations() : 0;
+        if (missing > 0) addLabel(form, "Còn " + missing + " đoạn chưa có bản dịch.");
+        AlertDialog.Builder modeDialog = sheet(voice ? "Đọc thành tiếng" : "Phụ đề", form).setNegativeButton("Hủy", null)
                 .setPositiveButton("Áp dụng", (dialog, which) -> {
                     CueTimeline.Mode selected = CueTimeline.Mode.values()[mode.getSelectedItemPosition()];
                     if (volume != null) {
@@ -591,7 +639,15 @@ public final class MainActivity extends Activity {
                         display = selected;
                     }
                     updateControls(null);
-                }));
+                });
+        if (missing > 0 && !session.busy) {
+            modeDialog.setNeutralButton("Dịch lại", (window, which) -> {
+                if (!session.busy && session.missingTranslations() > 0) {
+                    session.translate(session.targetLanguage);
+                }
+            });
+        }
+        showSheet(modeDialog);
     }
 
     private void buildTranscript(LinearLayout root) {
@@ -781,11 +837,6 @@ public final class MainActivity extends Activity {
             return language == null ? "Chưa có ngôn ngữ để đọc thành tiếng."
                     : "Thiết bị chưa có giọng đọc cho " + languageName(language) + ".";
         }
-        if (mode == CueTimeline.Mode.TRANSLATION && session.missingTranslations() > 0
-                && !speech.supports(session.sourceLanguage)) {
-            return "Cần giọng đọc " + languageName(session.sourceLanguage)
-                    + " để đọc các đoạn chưa dịch.";
-        }
         return "";
     }
 
@@ -803,15 +854,13 @@ public final class MainActivity extends Activity {
         if (!text.contentEquals(subtitle.getText())) subtitle.setText(text);
         subtitle.setVisibility(text.isEmpty() ? TextView.GONE : TextView.VISIBLE);
 
-
-        boolean readsTranslation = read == CueTimeline.Mode.TRANSLATION && cue != null && cue.hasTranslation();
-        String language = readsTranslation ? session.targetLanguage : session.sourceLanguage;
-        if (read == CueTimeline.Mode.OFF) {
+        boolean translatedSpeech = read == CueTimeline.Mode.TRANSLATION;
+        if (read == CueTimeline.Mode.OFF || !player.isPlaying()
+                || (translatedSpeech && (cue == null || !cue.hasTranslation()))) {
             speech.stop();
-        } else if (player.isPlaying()) {
-            speech.update(cue, read.text(cue), language, settings.dubbingVolume / 100f);
         } else {
-            speech.stop();
+            String language = translatedSpeech ? session.targetLanguage : session.sourceLanguage;
+            speech.update(cue, read.text(cue), language, settings.dubbingVolume / 100f);
         }
     }
 
