@@ -484,6 +484,7 @@ public final class MainActivity extends Activity {
             return;
         }
         if (telegramSession != null && telegramSession.isNativeAvailable()) {
+            if (showTelegramCredential(telegramSession.authorizationState())) return;
             new AlertDialog.Builder(this).setTitle("Tài khoản Telegram")
                     .setMessage("Trạng thái TDLib: " + telegramSession.authorizationState()
                             + ". Nếu cần đổi API ID/hash, hãy xóa cấu hình và khởi động lại ứng dụng.")
@@ -548,28 +549,36 @@ public final class MainActivity extends Activity {
                 }).show();
     }
 
-    private void onTelegramAuthState(TelegramAuthorizationFlow.State state) {
-        if (state == lastTelegramState) return;
-        lastTelegramState = state;
+    private boolean showTelegramCredential(TelegramAuthorizationFlow.State state) {
         switch (state) {
             case PHONE_REQUIRED:
                 promptTelegramCredential("Số điện thoại Telegram", "Số điện thoại quốc tế, ví dụ +84...",
                         false, (value, callback) -> telegramSession.submitPhone(value, callback));
-                break;
+                return true;
             case CODE_REQUIRED:
                 promptTelegramCredential("Mã xác minh Telegram", "Mã OTP Telegram",
                         true, (value, callback) -> {
                             char[] code = value.toCharArray();
                             telegramSession.submitCode(code, callback);
                         });
-                break;
+                return true;
             case PASSWORD_REQUIRED:
                 promptTelegramCredential("Xác thực hai bước", "Mật khẩu Telegram 2FA",
                         true, (value, callback) -> {
                             char[] password = value.toCharArray();
                             telegramSession.submitTwoStepPassword(password, callback);
                         });
-                break;
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private void onTelegramAuthState(TelegramAuthorizationFlow.State state) {
+        if (state == lastTelegramState) return;
+        lastTelegramState = state;
+        if (showTelegramCredential(state)) return;
+        switch (state) {
             case READY:
                 showStatus("Đã xác thực Telegram qua TDLib");
                 break;

@@ -20,12 +20,18 @@ final class VideoSourceResolver {
         }
     }
 
+    private static final Pattern TELEGRAM_WITHOUT_SCHEME = Pattern.compile(
+            "^(?:t\\.me|www\\.t\\.me|telegram\\.me)/", Pattern.CASE_INSENSITIVE);
     private static final Pattern TELEGRAM_POST = Pattern.compile(
             "^/([A-Za-z][A-Za-z0-9_]{3,31})/([1-9][0-9]*)(?:/)?$");
     private VideoSourceResolver() {}
 
     static Source classify(String input) throws Exception {
-        URL url = VideoUrlPolicy.requireHttps(input.trim());
+        String address = input.trim();
+        if (TELEGRAM_WITHOUT_SCHEME.matcher(address).lookingAt()) {
+            address = "https://" + address;
+        }
+        URL url = VideoUrlPolicy.requireHttps(address);
         String host = url.getHost().toLowerCase(java.util.Locale.ROOT);
         if (host.equals("t.me") || host.equals("www.t.me") || host.equals("telegram.me")) {
             Matcher match = TELEGRAM_POST.matcher(url.getPath());

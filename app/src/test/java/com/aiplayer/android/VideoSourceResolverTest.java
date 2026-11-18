@@ -16,6 +16,18 @@ public class VideoSourceResolverTest {
         assertEquals("https://t.me/xdcmdj/3076?embed=1",
                 VideoSourceResolver.publicTelegramEmbed(source).toExternalForm());
     }
+    @Test public void classifiesTelegramPostsWithoutScheme() throws Exception {
+        for (String host : new String[]{"t.me", "WWW.T.ME", "telegram.me"}) {
+            VideoSourceResolver.Source source = VideoSourceResolver.classify(" " + host + "/xdcmdj/3076 ");
+            assertEquals(VideoSourceResolver.Kind.TELEGRAM_PUBLIC_POST, source.kind);
+            assertEquals("https://t.me/xdcmdj/3076?embed=1",
+                    VideoSourceResolver.publicTelegramEmbed(source).toExternalForm());
+        }
+    }
+    @Test public void doesNotAddSchemeToLookalikeDomain() throws Exception {
+        assertThrows(java.net.MalformedURLException.class,
+                () -> VideoSourceResolver.classify("t.me.example.com/xdcmdj/3076"));
+    }
     @Test public void doesNotClassifyPrivateTelegramLinks() throws Exception {
         assertEquals(VideoSourceResolver.Kind.UNSUPPORTED_PAGE,
                 VideoSourceResolver.classify("https://t.me/c/123456/3076").kind);

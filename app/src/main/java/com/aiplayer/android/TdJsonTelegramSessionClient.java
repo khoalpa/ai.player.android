@@ -84,13 +84,11 @@ final class TdJsonTelegramSessionClient implements TelegramSessionClient {
             Thread worker = new Thread(this::poll, "AIPlayer-TDLib");
             worker.setDaemon(true);
             worker.start();
-            // A new TDLib JSON client does not emit updates until the first request.
+            // Trigger the initial update. Only updateAuthorizationState advances the flow.
             send(request("getAuthorizationState"), response -> {
                 if ("error".equals(response.optString("@type"))) {
                     flow.onError();
                     if (stateListener != null) stateListener.authorizationChanged(flow.state());
-                } else if (response.optString("@type").startsWith("authorizationState")) {
-                    handleAuthorizationState(response.optString("@type"));
                 }
             });
             callback.finished(null);
@@ -165,6 +163,7 @@ final class TdJsonTelegramSessionClient implements TelegramSessionClient {
             params.put("application_version", "AI Player 0.1");
             send(params, response -> {
                 if ("error".equals(response.optString("@type"))) {
+                    android.util.Log.w(TAG, "setTdlibParameters failed, code=" + response.optInt("code", -1));
                     flow.onError();
                     Listener listener = stateListener;
                     if (listener != null) listener.authorizationChanged(flow.state());
