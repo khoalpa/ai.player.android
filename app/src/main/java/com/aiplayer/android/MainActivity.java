@@ -4,6 +4,8 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.net.Uri;
+import android.widget.EditText;
+import java.io.File;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -39,6 +41,8 @@ import android.widget.SeekBar;
 import android.widget.Spinner;
 import android.widget.TextView;
 
+import androidx.annotation.OptIn;
+import androidx.media3.common.util.UnstableApi;
 import androidx.media3.common.C;
 import androidx.media3.common.Format;
 import androidx.media3.common.Tracks;
@@ -67,6 +71,7 @@ public final class MainActivity extends Activity {
     private VideoWork work;
     private PlaybackSessionStore sessionStore;
     private Uri savedVideo;
+    private SavedVideoStore videoStore;
     private Uri currentVideo;
     private String currentVideoIdentity;
     private long savedTranscriptVersion = -1;
@@ -104,6 +109,7 @@ public final class MainActivity extends Activity {
         work = VideoWork.obtain(this);
         session = work.session;
         player = new ExoPlayer.Builder(this).build();
+        videoStore = new SavedVideoStore(this);
         setContentView(buildContent());
         speech = new CueSpeech(this, this::onSpeechError);
         work.attach(workObserver);
@@ -158,12 +164,12 @@ public final class MainActivity extends Activity {
         chrome.setGravity(Gravity.CENTER_VERTICAL);
         title = new TextView(this);
         title.setText("AI Player");
-        title.setTextSize(18);
+        title.setTextSize(16);
         title.setSingleLine();
         title.setEllipsize(TextUtils.TruncateAt.END);
-        title.setPadding(dp(12), 0, dp(4), 0);
+        title.setPadding(dp(8), 0, dp(4), 0);
         chrome.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
-        iconButton(chrome, R.drawable.ic_control_open, "Mở video", false, this::openPicker);
+        iconButton(chrome, R.drawable.ic_control_open, "Mở video", false, this::showVideoSources);
         Button menu = iconButton(chrome, R.drawable.ic_control_more, "Tùy chọn video", false, null);
         menu.setOnClickListener(anchor -> {
             PopupMenu popup = new PopupMenu(this, anchor);
@@ -195,7 +201,7 @@ public final class MainActivity extends Activity {
         FrameLayout.LayoutParams centered = new FrameLayout.LayoutParams(-1, -2, Gravity.CENTER);
         surface.addView(welcome, centered);
         empty = welcome;
-        Button openVideo = compactButton(welcome, "Mở video", this::openPicker);
+        Button openVideo = compactButton(welcome, "Mở video", this::showVideoSources);
         stylePrimaryButton(openVideo);
         setLeadingIcon(openVideo, R.drawable.ic_control_open);
         compactButton(welcome, "Không tìm thấy video?", () -> new AlertDialog.Builder(this)
@@ -206,7 +212,7 @@ public final class MainActivity extends Activity {
         subtitle = new TextView(this);
         subtitle.setTextColor(0xffffffff);
         subtitle.setBackgroundColor(0xc0000000);
-        subtitle.setTextSize(18);
+        subtitle.setTextSize(16);
         subtitle.setGravity(Gravity.CENTER);
         subtitle.setPadding(dp(8), dp(4), dp(8), dp(4));
         FrameLayout.LayoutParams overlay = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
@@ -232,11 +238,12 @@ public final class MainActivity extends Activity {
 
         feedback = row(root);
         feedback.setGravity(Gravity.CENTER_VERTICAL);
-        feedback.setPadding(dp(12), 0, dp(12), 0);
+        feedback.setPadding(dp(8), 0, dp(8), 0);
         progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         feedback.addView(progress, new LinearLayout.LayoutParams(dp(64), dp(24)));
         status = new TextView(this);
         status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        status.setTextSize(12);
         feedback.addView(status, new LinearLayout.LayoutParams(0, -2, 1));
         dismissStatus = iconButton(feedback, R.drawable.ic_control_cancel, "Đóng thông báo",
                 false, () -> showStatus(""));
@@ -269,7 +276,10 @@ public final class MainActivity extends Activity {
         Button button = new Button(this);
         button.setText(label);
         button.setAllCaps(false);
-        button.setMinHeight(dp(48));
+        button.setMinHeight(dp(48)); // Maintain an accessible touch target.
+        button.setMinimumHeight(dp(48));
+        button.setTextSize(12);
+        button.setPadding(dp(8), dp(4), dp(8), dp(4));
         button.setOnClickListener(v -> action.run());
         parent.addView(button, new LinearLayout.LayoutParams(-2, -2));
         return button;
@@ -277,10 +287,12 @@ public final class MainActivity extends Activity {
 
     private Button iconButton(LinearLayout row, int icon, String description, boolean weighted, Runnable action) {
         Button button = new Button(this);
+        // Keep a 48dp icon touch target for accessibility in compact mode.
         button.setMinWidth(dp(48));
         button.setMinimumWidth(dp(48));
         button.setMinHeight(dp(48));
         button.setMinimumHeight(dp(48));
+        button.setTextSize(12);
         button.setPadding(dp(8), dp(4), dp(8), dp(4));
         button.setGravity(Gravity.CENTER);
         button.setAllCaps(false);
@@ -324,10 +336,87 @@ public final class MainActivity extends Activity {
         describeControl(transcript, visible ? "Đóng transcript" : "Mở transcript");
     }
 
+    private void showVideoSources() {
+        new AlertDialog.Builder(this).setTitle("Mở video")
+                .setItems(new String[]{"Chọn video trên thiết bị", "Tải video từ URL", "Video đã lưu"},
+                        (dialog, which) -> {
+                            if (which == 0) openPicker();
+                            else if (which == 1) showDownloadDialog();
+                            else showSavedVideos();
+                        }).show();
+    }
+
+    private void showDownloadDialog() {
+        EditText address = new EditText(this);
+        address.setSingleLine(true);
+        address.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI);
+        address.setHint("https://example.com/video.mp4");
+        new AlertDialog.Builder(this).setTitle("Tải video từ URL")
+                .setView(address).setNegativeButton("Hủy", null)
+                .setPositiveButton("Tải", (dialog, which) -> {
+                    String url = address.getText().toString().trim();
+                    showStatus("Đang tải video...");
+                    videoStore.download(url, (file, error) -> {
+                        if (destroyed) return;
+                        if (error != null) {
+                            new AlertDialog.Builder(this).setTitle("Không thể tải video")
+                                    .setMessage(error.getMessage()).setPositiveButton("Đóng", null).show();
+                            return;
+                        }
+                        showStatus("Đã lưu video");
+                        openSavedVideo(file);
+                    });
+                }).show();
+    }
+
+    private void showSavedVideos() {
+        File[] files = videoStore.list();
+        if (files.length == 0) {
+            new AlertDialog.Builder(this).setTitle("Video đã lưu")
+                    .setMessage("Chưa có video nào được tải về.")
+                    .setPositiveButton("Đóng", null).show();
+            return;
+        }
+        String[] names = new String[files.length];
+        for (int i = 0; i < files.length; i++) names[i] = files[i].getName();
+        new AlertDialog.Builder(this).setTitle("Video đã lưu")
+                .setItems(names, (dialog, which) -> openSavedVideo(files[which]))
+                .setNeutralButton("Xóa video", (dialog, which) -> showDeleteSavedVideos())
+                .setNegativeButton("Đóng", null).show();
+    }
+
+    private void showDeleteSavedVideos() {
+        File[] files = videoStore.list();
+        String[] names = new String[files.length];
+        for (int i = 0; i < files.length; i++) names[i] = files[i].getName();
+        new AlertDialog.Builder(this).setTitle("Chọn video cần xóa")
+                .setItems(names, (dialog, which) -> new AlertDialog.Builder(this)
+                        .setTitle("Xóa video?")
+                        .setMessage(files[which].getName())
+                        .setNegativeButton("Hủy", null)
+                        .setPositiveButton("Xóa", (d, w) -> {
+                            if (files[which].delete()) showStatus("Đã xóa video");
+                            else showStatus("Không thể xóa video");
+                        }).show())
+                .setNegativeButton("Đóng", null).show();
+    }
+
+    private void openSavedVideo(File file) {
+        Uri uri = Uri.fromFile(file);
+        int requestId = ++openRequest;
+        player.pause();
+        savePlaybackSession();
+        sessionStore.load(uri, restored -> {
+            if (destroyed || requestId != openRequest) return;
+            openVideo(uri, restored);
+        });
+    }
+
     private void openPicker() {
         pick(OPEN_VIDEO, "video/*");
     }
 
+    @OptIn(markerClass = UnstableApi.class)
     private void setFullscreen(boolean enabled) {
         fullscreen = enabled;
         playerView.setFullscreenButtonState(enabled);
@@ -353,9 +442,12 @@ public final class MainActivity extends Activity {
         Button button = new Button(this);
         button.setText(label);
         button.setAllCaps(false);
-        button.setMinHeight(dp(48));
+        button.setMinHeight(dp(48)); // Maintain an accessible touch target.
+        button.setMinimumHeight(dp(48));
+        button.setTextSize(12);
+        button.setPadding(dp(8), dp(4), dp(8), dp(4));
         button.setOnClickListener(view -> action.run());
-        row.addView(button, new LinearLayout.LayoutParams(0, -2, 1));
+        row.addView(button, new LinearLayout.LayoutParams(0, dp(48), 1));
         return button;
     }
 
@@ -430,6 +522,7 @@ public final class MainActivity extends Activity {
         openVideo(uri, restored, true);
     }
 
+    @OptIn(markerClass = UnstableApi.class)
     private void openVideo(Uri uri, PlaybackSessionStore.Snapshot restored, boolean resetSession) {
         speech.stop();
         hasVideo = true;
@@ -470,6 +563,7 @@ public final class MainActivity extends Activity {
     private Spinner selection(LinearLayout form, String label, List<String> options, int selected) {
         TextView caption = new TextView(this);
         caption.setText(label);
+        caption.setTextSize(12);
         form.addView(caption);
         Spinner picker = new Spinner(this);
         ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, options);
@@ -477,7 +571,7 @@ public final class MainActivity extends Activity {
         picker.setAdapter(adapter);
         picker.setSelection(Math.max(0, selected));
         picker.setContentDescription(label);
-        form.addView(picker, new LinearLayout.LayoutParams(-1, dp(48)));
+        form.addView(picker, new LinearLayout.LayoutParams(-1, dp(40)));
         return picker;
     }
 
@@ -489,7 +583,7 @@ public final class MainActivity extends Activity {
 
     private LinearLayout form() {
         LinearLayout form = column();
-        form.setPadding(dp(20), dp(12), dp(20), dp(12));
+        form.setPadding(dp(12), dp(8), dp(12), dp(8));
         return form;
     }
 
@@ -614,6 +708,7 @@ public final class MainActivity extends Activity {
         if (choices.size() < MODES.size()) addLabel(form, "Cần tạo bản dịch trước để chọn Bản dịch.");
         SeekBar volume = voice ? volumeField(form, "Âm lượng giọng đọc", settings.dubbingVolume) : null;
         TextView availability = new TextView(this);
+        availability.setTextSize(12);
         if (voice) {
             form.addView(availability);
             mode.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
@@ -719,7 +814,8 @@ public final class MainActivity extends Activity {
             if (showTranslation && !cue.hasTranslation()) {
                 line = "Chưa có bản dịch\nBản gốc: " + cue.sourceText;
             }
-            view.setPadding(dp(12), dp(10), dp(12), dp(10));
+            view.setTextSize(12);
+            view.setPadding(dp(8), dp(8), dp(8), dp(8));
             String timestamp = (active ? "Đang phát · " : "") + TranscriptParser.formatTime(cue.startMs);
             SpannableString content = new SpannableString(timestamp + "\n"
                     + (line.isEmpty() ? "Chưa có bản dịch" : line));
@@ -745,6 +841,7 @@ public final class MainActivity extends Activity {
     private void addLabel(LinearLayout form, String label) {
         TextView text = new TextView(this);
         text.setText(label);
+        text.setTextSize(12);
         form.addView(text);
     }
 
