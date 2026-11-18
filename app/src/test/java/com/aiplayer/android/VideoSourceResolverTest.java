@@ -28,6 +28,18 @@ public class VideoSourceResolverTest {
         assertEquals("https://cdn.example.com/video.mp4?token=1&x=2",
                 VideoSourceResolver.extractPublicMediaUrl("<video controls src=\"https://cdn.example.com/video.mp4?token=1&amp;x=2\"></video>"));
     }
+    @Test public void extractsTelegramWidgetVideoDiv() throws Exception {
+        String html = "<div class=\"tgme_widget_message_video\" src=\"https://cdn.example.org/movie.mp4?x=1&amp;y=2\"></div>";
+        assertEquals("https://cdn.example.org/movie.mp4?x=1&y=2",
+                VideoSourceResolver.extractPublicMediaUrl(html));
+    }
+    @Test public void ignoresTelegramVideoThumbnail() throws Exception {
+        String html = "<div class=\"tgme_widget_message_video_thumb\" src=\"https://cdn.example.org/thumb.jpg\"></div>";
+        try {
+            VideoSourceResolver.extractPublicMediaUrl(html);
+            fail("Thumbnail is not a video");
+        } catch (IllegalArgumentException expected) { /* expected */ }
+    }
     @Test public void rejectsNonVideoPublicEmbed() throws Exception {
         try {
             VideoSourceResolver.extractPublicMediaUrl("<a href=\"https://example.com/video.mp4\">Download</a>");
