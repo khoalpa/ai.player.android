@@ -260,13 +260,10 @@ final class TdJsonTelegramSessionClient implements TelegramSessionClient {
                     return;
                 }
                 try {
-                    if (messageId > (Long.MAX_VALUE >> 20)) {
-                        callback.finished(null, "Mã bài đăng quá lớn");
-                        return;
-                    }
+                    long tdlibMessageId = TelegramMessageReference.toTdlibMessageId(messageId);
                     JSONObject get = request("getMessage");
                     get.put("chat_id", chat.getLong("id"));
-                    get.put("message_id", messageId << 20);
+                    get.put("message_id", tdlibMessageId);
                     send(get, message -> onMessage(message, callback));
                 } catch (Exception error) {
                     callback.finished(null, "Không đọc được ID bài đăng");
