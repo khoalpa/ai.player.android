@@ -158,10 +158,10 @@ public final class MainActivity extends Activity {
         chrome.setGravity(Gravity.CENTER_VERTICAL);
         title = new TextView(this);
         title.setText("AI Player");
-        title.setTextSize(18);
+        title.setTextSize(16);
         title.setSingleLine();
         title.setEllipsize(TextUtils.TruncateAt.END);
-        title.setPadding(dp(12), 0, dp(4), 0);
+        title.setPadding(dp(8), 0, dp(4), 0);
         chrome.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
         iconButton(chrome, R.drawable.ic_control_open, "Mở video", false, this::openPicker);
         Button menu = iconButton(chrome, R.drawable.ic_control_more, "Tùy chọn video", false, null);
@@ -206,7 +206,7 @@ public final class MainActivity extends Activity {
         subtitle = new TextView(this);
         subtitle.setTextColor(0xffffffff);
         subtitle.setBackgroundColor(0xc0000000);
-        subtitle.setTextSize(18);
+        subtitle.setTextSize(16);
         subtitle.setGravity(Gravity.CENTER);
         subtitle.setPadding(dp(8), dp(4), dp(8), dp(4));
         FrameLayout.LayoutParams overlay = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
@@ -232,11 +232,12 @@ public final class MainActivity extends Activity {
 
         feedback = row(root);
         feedback.setGravity(Gravity.CENTER_VERTICAL);
-        feedback.setPadding(dp(12), 0, dp(12), 0);
+        feedback.setPadding(dp(8), 0, dp(8), 0);
         progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         feedback.addView(progress, new LinearLayout.LayoutParams(dp(64), dp(24)));
         status = new TextView(this);
         status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        status.setTextSize(12);
         feedback.addView(status, new LinearLayout.LayoutParams(0, -2, 1));
         dismissStatus = iconButton(feedback, R.drawable.ic_control_cancel, "Đóng thông báo",
                 false, () -> showStatus(""));
@@ -269,7 +270,9 @@ public final class MainActivity extends Activity {
         Button button = new Button(this);
         button.setText(label);
         button.setAllCaps(false);
-        button.setMinHeight(dp(48));
+        button.setMinHeight(dp(40));
+        button.setTextSize(12);
+        button.setPadding(dp(8), dp(4), dp(8), dp(4));
         button.setOnClickListener(v -> action.run());
         parent.addView(button, new LinearLayout.LayoutParams(-2, -2));
         return button;
@@ -277,10 +280,12 @@ public final class MainActivity extends Activity {
 
     private Button iconButton(LinearLayout row, int icon, String description, boolean weighted, Runnable action) {
         Button button = new Button(this);
+        // Keep the 48dp touch target while drawing a compact 40dp control.
         button.setMinWidth(dp(48));
         button.setMinimumWidth(dp(48));
         button.setMinHeight(dp(48));
         button.setMinimumHeight(dp(48));
+        button.setTextSize(12);
         button.setPadding(dp(8), dp(4), dp(8), dp(4));
         button.setGravity(Gravity.CENTER);
         button.setAllCaps(false);
@@ -353,7 +358,9 @@ public final class MainActivity extends Activity {
         Button button = new Button(this);
         button.setText(label);
         button.setAllCaps(false);
-        button.setMinHeight(dp(48));
+        button.setMinHeight(dp(40));
+        button.setTextSize(12);
+        button.setPadding(dp(8), dp(4), dp(8), dp(4));
         button.setOnClickListener(view -> action.run());
         row.addView(button, new LinearLayout.LayoutParams(0, -2, 1));
         return button;
@@ -614,6 +621,7 @@ public final class MainActivity extends Activity {
         if (choices.size() < MODES.size()) addLabel(form, "Cần tạo bản dịch trước để chọn Bản dịch.");
         SeekBar volume = voice ? volumeField(form, "Âm lượng giọng đọc", settings.dubbingVolume) : null;
         TextView availability = new TextView(this);
+        availability.setTextSize(12);
         if (voice) {
             form.addView(availability);
             mode.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
@@ -719,7 +727,8 @@ public final class MainActivity extends Activity {
             if (showTranslation && !cue.hasTranslation()) {
                 line = "Chưa có bản dịch\nBản gốc: " + cue.sourceText;
             }
-            view.setPadding(dp(12), dp(10), dp(12), dp(10));
+            view.setTextSize(12);
+            view.setPadding(dp(8), dp(8), dp(8), dp(8));
             String timestamp = (active ? "Đang phát · " : "") + TranscriptParser.formatTime(cue.startMs);
             SpannableString content = new SpannableString(timestamp + "\n"
                     + (line.isEmpty() ? "Chưa có bản dịch" : line));
@@ -745,6 +754,7 @@ public final class MainActivity extends Activity {
     private void addLabel(LinearLayout form, String label) {
         TextView text = new TextView(this);
         text.setText(label);
+        text.setTextSize(12);
         form.addView(text);
     }
 
