@@ -37,4 +37,5 @@ jobs:
           path: |
             app/build/reports/**
             app/build/test-results/**
-            app/build/outputs/lint-results-*.html
+            app/build/outputs/lint-results-*.*
+            app/build/intermediates/lint_intermediate_text_report/**
