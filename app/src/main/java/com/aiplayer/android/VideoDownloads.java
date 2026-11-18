@@ -57,13 +57,29 @@ final class VideoDownloads {
         request.setDestinationUri(Uri.fromFile(new File(folder, name)));
         DownloadManager manager = (DownloadManager) context.getSystemService(Context.DOWNLOAD_SERVICE);
         if (manager == null) throw new IllegalStateException("Dịch vụ tải xuống không khả dụng.");
-        return manager.enqueue(request);
+        long id = manager.enqueue(request);
+        context.getSharedPreferences("video_downloads", Context.MODE_PRIVATE)
+                .edit().putLong(name, id).apply();
+        return id;
     }
 
     static File[] saved(Context context) {
         File[] files = directory(context).listFiles(file -> file.isFile() && file.length() > 0
                 && isVideoFile(file.getName()));
         if (files == null) return new File[0];
+        DownloadManager manager = (DownloadManager) context.getSystemService(Context.DOWNLOAD_SERVICE);
+        java.util.ArrayList<File> completed = new java.util.ArrayList<>();
+        for (File file : files) {
+            long id = context.getSharedPreferences("video_downloads", Context.MODE_PRIVATE)
+                    .getLong(file.getName(), -1L);
+            if (id < 0 || manager == null) continue;
+            try (android.database.Cursor cursor = manager.query(new DownloadManager.Query().setFilterById(id))) {
+                if (cursor != null && cursor.moveToFirst()
+                        && cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+                        == DownloadManager.STATUS_SUCCESSFUL) completed.add(file);
+            }
+        }
+        files = completed.toArray(new File[0]);
         Arrays.sort(files, Comparator.comparingLong(File::lastModified).reversed());
         return files;
     }
