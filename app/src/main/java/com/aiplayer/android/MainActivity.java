@@ -1,6 +1,9 @@
 package com.aiplayer.android;
 
 import android.app.Activity;
+import android.app.DownloadManager;
+import android.widget.EditText;
+import java.io.File;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.net.Uri;
@@ -175,6 +178,14 @@ public final class MainActivity extends Activity {
             popup.getMenu().add("Đổi ngôn ngữ bản dịch")
                     .setEnabled(session.targetLanguage != null && !session.busy)
                     .setOnMenuItemClickListener(item -> { chooseTranslationLanguage(); return true; });
+            popup.getMenu().add("Tải video từ URL").setOnMenuItemClickListener(item -> {
+                showDownloadUrl();
+                return true;
+            });
+            popup.getMenu().add("Video đã lưu").setOnMenuItemClickListener(item -> {
+                showSavedVideos();
+                return true;
+            });
             popup.getMenu().add("Cài đặt").setOnMenuItemClickListener(item -> {
                 showSettings();
                 return true;
@@ -322,6 +333,57 @@ public final class MainActivity extends Activity {
         transcriptPanel.setVisibility(visible ? View.VISIBLE : View.GONE);
         transcript.setSelected(visible);
         describeControl(transcript, visible ? "Đóng transcript" : "Mở transcript");
+    }
+
+    private void showDownloadUrl() {
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_VARIATION_URI);
+        input.setHint("https://example.com/video.mp4");
+        LinearLayout panel = form();
+        panel.addView(input, new LinearLayout.LayoutParams(-1, dp(56)));
+        new AlertDialog.Builder(this).setTitle("Tải video từ URL")
+                .setMessage("Hỗ trợ liên kết trực tiếp tới tệp video. URL bài đăng Telegram và trang web cần bộ phân giải riêng.")
+                .setView(panel).setNegativeButton("Hủy", null)
+                .setPositiveButton("Tải", (dialog, which) -> {
+                    try {
+                        long id = VideoDownloads.enqueue(this, input.getText().toString().trim());
+                        showStatus("Đã đưa video vào hàng đợi tải xuống (#" + id + ").");
+                    } catch (Exception ex) {
+                        new AlertDialog.Builder(this).setTitle("Không tải được video")
+                                .setMessage(ex.getMessage()).setPositiveButton("Đóng", null).show();
+                    }
+                }).show();
+    }
+
+    private void showSavedVideos() {
+        final File[] files;
+        try {
+            files = VideoDownloads.saved(this);
+        } catch (Exception ex) {
+            showStatus(ex.getMessage());
+            return;
+        }
+        if (files.length == 0) {
+            new AlertDialog.Builder(this).setTitle("Video đã lưu")
+                    .setMessage("Chưa có video tải xuống hoàn tất. Hãy thử lại sau khi tải xong.")
+                    .setPositiveButton("Đóng", null).show();
+            return;
+        }
+        String[] labels = new String[files.length];
+        for (int i = 0; i < files.length; i++) {
+            labels[i] = files[i].getName() + " · " + (files[i].length() / (1024 * 1024)) + " MB";
+        }
+        new AlertDialog.Builder(this).setTitle("Video đã lưu")
+                .setItems(labels, (dialog, index) -> {
+                    Uri uri = Uri.fromFile(files[index]);
+                    ++openRequest;
+                    player.pause();
+                    savePlaybackSession();
+                    savedVideo = null;
+                    openVideo(uri, null);
+                }).setNegativeButton("Đóng", null).show();
     }
 
     private void openPicker() {
