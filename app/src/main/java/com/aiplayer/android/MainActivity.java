@@ -35,8 +35,11 @@ import com.google.mlkit.nl.translate.TranslateLanguage;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -90,7 +93,9 @@ public final class MainActivity extends Activity {
     private boolean started;
     private final java.util.function.Consumer<String> workObserver = message -> {
         if (started && !destroyed) updateControls(message);
+        refreshModelsAfterWork();
     };
+    private final Runnable modelObserver = this::renderModels;
     private int openRequest;
     private CueSpeech speech;
     private ExoPlayer player;
@@ -128,6 +133,8 @@ public final class MainActivity extends Activity {
     private boolean hasVideo;
     private FrameLayout screenHost;
     private View settingsScreen;
+    private LinearLayout modelForm;
+    private boolean modelSessionBusy;
     private boolean settingsDetail;
     private TextView telegramSettingsStatus;
     private TextView telegramSettingsDescription;
@@ -160,6 +167,7 @@ public final class MainActivity extends Activity {
         applySystemBars();
         speech = new CueSpeech(this, this::onSpeechError);
         work.attach(workObserver);
+        work.attachModels(modelObserver);
         applyVideoVolume();
         player.addListener(new Player.Listener() {
             @Override
@@ -1278,6 +1286,7 @@ public final class MainActivity extends Activity {
         screenHost = new FrameLayout(this);
         screenHost.addView(buildContent(), new FrameLayout.LayoutParams(-1, -1));
         settingsScreen = null;
+        modelForm = null;
         telegramSettingsStatus = null;
         telegramSettingsDescription = null;
         telegramSettingsProgress = null;
@@ -1288,6 +1297,7 @@ public final class MainActivity extends Activity {
     private void closeSettings() {
         screenHost.removeView(settingsScreen);
         settingsScreen = null;
+        modelForm = null;
         telegramSettingsStatus = null;
         telegramSettingsDescription = null;
         telegramSettingsProgress = null;
@@ -1300,6 +1310,7 @@ public final class MainActivity extends Activity {
 
     private LinearLayout settingsPage(String heading, LinearLayout form, boolean detail) {
         if (settingsScreen != null) screenHost.removeView(settingsScreen);
+        modelForm = null;
         telegramSettingsStatus = null;
         telegramSettingsDescription = null;
         telegramSettingsProgress = null;
@@ -1391,12 +1402,138 @@ public final class MainActivity extends Activity {
         settingsEntry(form, R.drawable.ic_control_captions, "Ngôn ngữ và phụ đề",
                 languageName(settings.sourceLanguage) + " → " + languageName(settings.targetLanguage)
                         + " · Phụ đề " + settings.subtitleSize + " sp", this::showLanguageSettings);
+        settingsEntry(form, R.drawable.ic_control_download, "Quản lý model",
+                "Nhận dạng giọng nói · Dịch offline", this::showModels);
         settingsEntry(form, R.drawable.ic_control_voice, "Âm thanh",
                 "Video " + settings.sourceVolume + "% · Giọng đọc " + settings.dubbingVolume + "%",
                 this::showAudioSettings);
         AppBuildInfo build = new AppBuildInfo(this);
         settingsEntry(form, R.drawable.ic_control_info, "Thông tin ứng dụng", build.summary,
                 () -> showBuildSettings(build));
+    }
+
+    private void showModels() {
+        LinearLayout form = form();
+        settingsPage("Quản lý model", form, true);
+        modelForm = form;
+        work.models.refreshTranslations();
+        renderModels();
+    }
+
+    private void refreshModelsAfterWork() {
+        if (modelForm != null && modelSessionBusy != session.busy) {
+            renderModels();
+            if (!session.busy) work.models.refreshTranslations();
+        }
+    }
+
+    private void renderModels() {
+        if (modelForm == null || destroyed) return;
+        OfflineModels models = work.models;
+        modelSessionBusy = session.busy;
+        modelForm.removeAllViews();
+
+        String source = LanguageUtils.normalizeLanguage(settings.sourceLanguage, "auto");
+        String target = LanguageUtils.normalizeLanguage(settings.targetLanguage, "vi");
+        Set<String> recognition = new LinkedHashSet<>();
+        recognition.add(SOURCE_LANGUAGES.contains(source) ? source : "en");
+        recognition.addAll(SOURCE_LANGUAGES);
+        modelText("Tạo transcript", true);
+        if (session.busy) modelText("Có tác vụ video đang chạy. Hãy đợi để quản lý model.", false);
+        boolean recognitionAvailable = !session.busy && !OfflineModels.pending(models.recognition);
+        for (String language : recognition) {
+            boolean downloaded = models.vosk.isDownloaded(language);
+            OfflineModels.Operation operation = models.recognition.get(language);
+            if (downloaded && (operation == OfflineModels.Operation.DOWNLOAD_FAILED
+                    || operation == OfflineModels.Operation.WIFI_REQUIRED)) operation = null;
+            modelRow("Vosk · " + languageName(language), models.vosk.isDownloaded(language),
+                    models.vosk.isBundled(language), operation, models.recognitionPercent, recognitionAvailable,
+                    () -> models.downloadRecognition(language), () -> models.deleteRecognition(language));
+        }
+
+        modelText("Dịch offline", true);
+        Set<String> required = new LinkedHashSet<>();
+        if (!source.equals(target)) {
+            if (OfflineModels.needsTranslationModel(source)) required.add(source);
+            if (OfflineModels.needsTranslationModel(target)) required.add(target);
+        }
+        if (source.equals(target)) modelText("Nguồn và đích giống nhau. Không cần tải model để dịch.", false);
+        if ("auto".equals(source)) modelText("Model nguồn được xác định khi dịch transcript.", false);
+        if (models.translationQueryFailed) {
+            modelText("Không kiểm tra được model dịch trên thiết bị.", false);
+            compactButton(modelForm, "Kiểm tra lại", () -> {
+                models.refreshTranslations();
+                renderModels();
+            });
+            return;
+        }
+        if (!models.translationsLoaded) {
+            modelText("Đang kiểm tra model dịch…", false);
+            return;
+        }
+
+        boolean translationAvailable = !session.busy && !OfflineModels.pending(models.translation);
+        List<String> missing = new ArrayList<>(required);
+        missing.removeAll(models.downloadedTranslations);
+        if (!missing.isEmpty()) {
+            compactButton(modelForm, "Tải model cần thiết", () -> models.downloadTranslations(missing))
+                    .setEnabled(translationAvailable);
+        }
+        Set<String> translation = new LinkedHashSet<>(required);
+        List<String> installed = new ArrayList<>(models.downloadedTranslations);
+        installed.sort((a, b) -> languageName(a).compareToIgnoreCase(languageName(b)));
+        translation.addAll(installed);
+        translation.removeIf(language -> !OfflineModels.needsTranslationModel(language));
+        for (String language : translation) {
+            modelRow(languageName(language), models.downloadedTranslations.contains(language), false,
+                    models.translation.get(language), -1, translationAvailable,
+                    () -> models.downloadTranslations(Collections.singletonList(language)),
+                    () -> models.deleteTranslation(language));
+        }
+    }
+
+    private void modelRow(String name, boolean downloaded, boolean bundled, OfflineModels.Operation operation,
+                          int percent, boolean enabled, Runnable download, Runnable delete) {
+        String status = downloaded ? "Đã tải" : bundled ? "Có sẵn trong ứng dụng" : "Chưa tải";
+        if (operation != null) {
+            switch (operation) {
+                case DOWNLOADING: status = percent < 0 ? "Đang tải qua Wi-Fi…"
+                        : "Đang tải và giải nén · " + percent + "%"; break;
+                case DELETING: status = "Đang xóa…"; break;
+                case DOWNLOAD_FAILED: status = "Tải thất bại"; break;
+                case DELETE_FAILED: status = "Xóa thất bại"; break;
+                case WIFI_REQUIRED: status = "Kết nối Wi-Fi để tải"; break;
+            }
+        }
+        modelText(name + " · " + status, false);
+        if (bundled && !downloaded) return;
+        boolean retry = operation == OfflineModels.Operation.DOWNLOAD_FAILED
+                || operation == OfflineModels.Operation.WIFI_REQUIRED;
+        String label = downloaded ? "Xóa" : retry ? "Thử lại" : "Tải qua Wi-Fi";
+        Button action = compactButton(modelForm, label, downloaded ? () -> {
+            PlayerAppearance.showDialog(new PlayerAppearance.DialogBuilder(this, settings)
+                    .setTitle("Xóa model " + name + "?")
+                    .setMessage(bundled ? "Ứng dụng sẽ dùng model có sẵn nếu cần."
+                            : "Ứng dụng sẽ cần kết nối mạng để tải lại model khi sử dụng.")
+                    .setNegativeButton("Hủy", null)
+                    .setPositiveButton("Xóa", (dialog, which) -> {
+                        if (!session.busy) delete.run();
+                    }).create(), settings);
+        } : download);
+        action.setContentDescription(label + " model " + name);
+        action.setEnabled(enabled);
+    }
+
+    private void modelText(String label, boolean heading) {
+        TextView text = new TextView(this);
+        text.setText(label);
+        text.setTextSize(settings.textSize(heading ? 18 : 14));
+        text.setPadding(dp(8), dp(heading ? 14 : 6), dp(8), dp(4));
+        if (heading) {
+            text.setTypeface(null, Typeface.BOLD);
+            if (android.os.Build.VERSION.SDK_INT >= 28) text.setAccessibilityHeading(true);
+        }
+        modelForm.addView(text);
     }
 
     private void showTelegramSettings() {
@@ -2007,6 +2144,7 @@ public final class MainActivity extends Activity {
         main.removeCallbacks(hideStatus);
         main.removeCallbacks(hideControls);
         player.release();
+        work.detachModels(modelObserver);
         work.detach(workObserver);
         sessionStore.close();
         videoDownloads.close();

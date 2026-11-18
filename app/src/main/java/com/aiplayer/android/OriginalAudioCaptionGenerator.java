@@ -44,6 +44,7 @@ final class OriginalAudioCaptionGenerator {
     // Owned by the recognition executor.
     private Model cachedModel;
     private String cachedKey;
+    private long cachedDeletionVersion;
 
     private static final class Timing {
         final long start = SystemClock.elapsedRealtimeNanos();
@@ -54,9 +55,9 @@ final class OriginalAudioCaptionGenerator {
         long audioMs;
     }
 
-    OriginalAudioCaptionGenerator(Context context) {
+    OriginalAudioCaptionGenerator(Context context, VoskModelStore modelStore) {
         this.context = context.getApplicationContext();
-        this.modelStore = new VoskModelStore(context);
+        this.modelStore = modelStore;
     }
 
     void generate(Uri videoUri, int audioTrack, String sourceLanguage, Callback callback) {
@@ -68,7 +69,8 @@ final class OriginalAudioCaptionGenerator {
         String key = modelStore.modelKey(sourceLanguage);
         executor.execute(() -> {
             if (callback.isCancelled()) return;
-            if (key.equals(cachedKey)) {
+            long deletionVersion = modelStore.deletionVersion();
+            if (key.equals(cachedKey) && cachedDeletionVersion == deletionVersion) {
                 recognize(videoUri, audioTrack, cachedModel, callback, timing, "memory");
                 return;
             }
@@ -90,6 +92,7 @@ final class OriginalAudioCaptionGenerator {
                             releaseModel();
                             cachedModel = model;
                             cachedKey = key;
+                            cachedDeletionVersion = deletionVersion;
                             recognize(videoUri, audioTrack, model, callback, timing, source);
                         });
                     } catch (RejectedExecutionException ex) {

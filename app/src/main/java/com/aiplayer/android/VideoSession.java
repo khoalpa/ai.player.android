@@ -37,6 +37,7 @@ final class VideoSession {
     private final Context context;
     private final Consumer<String> changed;
     private final OriginalAudioCaptionGenerator generator;
+    private final OfflineModels models;
     private final TranscriptCache cache;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService files = Executors.newSingleThreadExecutor();
@@ -62,10 +63,11 @@ final class VideoSession {
     int progressTotal;
     int progressCompleted;
 
-    VideoSession(Context context, Consumer<String> changed) {
+    VideoSession(Context context, Consumer<String> changed, OfflineModels models) {
         this.context = context.getApplicationContext();
         this.changed = changed;
-        generator = new OriginalAudioCaptionGenerator(context);
+        this.models = models;
+        generator = new OriginalAudioCaptionGenerator(context, models.vosk);
         cache = new TranscriptCache(context);
     }
 
@@ -134,6 +136,10 @@ final class VideoSession {
     }
 
     void generate(AudioTrack track, String language) {
+        if (OfflineModels.pending(models.recognition)) {
+            changed.accept("Đang quản lý model Vosk. Hãy đợi thao tác hoàn tất.");
+            return;
+        }
         cancel();
         int request = revision;
         busy = true;
@@ -283,6 +289,10 @@ final class VideoSession {
     }
 
     void translate(String target) {
+        if (OfflineModels.pending(models.translation)) {
+            changed.accept("Đang quản lý model dịch. Hãy đợi thao tác hoàn tất.");
+            return;
+        }
         cancel();
         int request = revision;
         busy = true;
@@ -320,6 +330,8 @@ final class VideoSession {
             @Override
             public void onFinished(int count, String status) {
                 if (request != revision) return;
+                translator.close();
+                translator = null;
                 busy = false;
                 changed.accept(status);
             }

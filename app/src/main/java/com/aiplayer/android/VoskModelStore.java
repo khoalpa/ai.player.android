@@ -2,6 +2,7 @@ package com.aiplayer.android;
 
 import android.content.Context;
 import android.content.res.AssetManager;
+import android.net.Network;
 
 import org.vosk.Model;
 import org.vosk.android.StorageService;
@@ -16,12 +17,17 @@ import java.net.URL;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.function.Consumer;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 final class VoskModelStore {
     interface Callback {
         boolean isCancelled();
+
+        default Network downloadNetwork() { return null; }
+
+        default void onDownloadProgress(int percent) {}
 
         void onReady(Model model, String source);
 
@@ -33,10 +39,13 @@ final class VoskModelStore {
     private final Context context;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private volatile HttpURLConnection activeConnection;
+    private volatile Callback activeDownload;
+    private volatile long deletionVersion;
 
     void cancel() {
         HttpURLConnection connection = activeConnection;
-        if (connection != null) connection.disconnect();
+        Callback download = activeDownload;
+        if (connection != null && download != null && download.isCancelled()) connection.disconnect();
     }
 
     private static void checkCancelled(Callback callback) throws InterruptedIOException {
@@ -55,6 +64,30 @@ final class VoskModelStore {
 
     String modelKey(String sourceLanguage) {
         return specFor(sourceLanguage).assetName;
+    }
+
+    boolean isDownloaded(String language) {
+        return isModelReady(modelDir(modelKey(language)));
+    }
+
+    boolean isBundled(String language) {
+        String model = modelKey(language);
+        try (InputStream config = context.getAssets().open(model + "/conf/model.conf")) {
+            return config.read() != -1;
+        } catch (IOException ex) {
+            return false;
+        }
+    }
+
+    long deletionVersion() { return deletionVersion; }
+
+    void deleteDownloaded(String language, Consumer<Boolean> finished) {
+        File directory = modelDir(modelKey(language));
+        executor.execute(() -> {
+            deletionVersion++;
+            deleteRecursive(directory);
+            finished.accept(!directory.exists());
+        });
     }
 
     void prepare(String sourceLanguage, Callback callback) {
@@ -101,7 +134,8 @@ final class VoskModelStore {
     }
 
     void close() {
-        cancel();
+        HttpURLConnection connection = activeConnection;
+        if (connection != null) connection.disconnect();
         executor.shutdownNow();
     }
 
@@ -113,7 +147,10 @@ final class VoskModelStore {
         HttpURLConnection conn = null;
         try {
             checkCancelled(callback);
-            conn = (HttpURLConnection) new URL(spec.url).openConnection();
+            URL url = new URL(spec.url);
+            Network network = callback.downloadNetwork();
+            conn = (HttpURLConnection) (network == null ? url.openConnection() : network.openConnection(url));
+            activeDownload = callback;
             activeConnection = conn;
             checkCancelled(callback);
             conn.setConnectTimeout(15000);
@@ -121,7 +158,10 @@ final class VoskModelStore {
             conn.setRequestProperty("User-Agent", "AIPlayerAndroid/0.1");
             long total = conn.getContentLengthLong();
             try (InputStream raw = new ModelDownloadStream(conn.getInputStream(), total, callback::isCancelled,
-                    percent -> callback.onStatus("Đang tải và giải nén model Vosk " + spec.assetName + ": " + percent + "%"));
+                    percent -> {
+                        callback.onDownloadProgress(percent);
+                        callback.onStatus("Đang tải và giải nén model Vosk " + spec.assetName + ": " + percent + "%");
+                    });
                  ZipInputStream zip = new ZipInputStream(raw)) {
                 ZipEntry entry;
                 byte[] buffer = new byte[64 * 1024];
@@ -165,6 +205,7 @@ final class VoskModelStore {
             if (!callback.isCancelled()) callback.onError("Không tải được model Vosk: " + ex.getMessage());
         } finally {
             activeConnection = null;
+            activeDownload = null;
             if (conn != null) conn.disconnect();
         }
     }

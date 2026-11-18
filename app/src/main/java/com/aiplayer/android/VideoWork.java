@@ -10,10 +10,12 @@ import java.util.function.Consumer;
 final class VideoWork {
     private static VideoWork instance;
     final VideoSession session;
+    final OfflineModels models;
     private final Context context;
     private final PlaybackSessionStore store;
     private final Handler main = new Handler(Looper.getMainLooper());
     private Consumer<String> observer;
+    private Runnable modelObserver;
     private boolean serviceRequested;
     private long savedVersion = -1;
     private String lastStatus;
@@ -31,10 +33,22 @@ final class VideoWork {
     private VideoWork(Context context) {
         this.context = context;
         store = new PlaybackSessionStore(context);
-        session = new VideoSession(context, this::changed);
+        models = new OfflineModels(context, this::modelsChanged);
+        session = new VideoSession(context, this::changed, models);
     }
 
     void attach(Consumer<String> observer) { this.observer = observer; }
+
+    void attachModels(Runnable observer) { modelObserver = observer; }
+
+    void detachModels(Runnable observer) {
+        if (modelObserver == observer) modelObserver = null;
+    }
+
+    private void modelsChanged() {
+        if (modelObserver != null) modelObserver.run();
+        releaseIfIdle();
+    }
 
     void detach(Consumer<String> owner) {
         if (observer != owner) return;
@@ -102,7 +116,7 @@ final class VideoWork {
     }
 
     private void releaseIfIdle() {
-        if (observer != null || session.busy || serviceRequested) return;
+        if (instance != this || observer != null || session.busy || serviceRequested || models.pending()) return;
         main.removeCallbacksAndMessages(null);
         session.close();
         store.close();
