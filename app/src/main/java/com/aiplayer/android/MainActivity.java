@@ -355,9 +355,22 @@ public final class MainActivity extends Activity {
                 .setView(address).setNegativeButton("Hủy", null)
                 .setPositiveButton("Tải", (dialog, which) -> {
                     String url = address.getText().toString().trim();
-                    showStatus("Đang tải video...");
-                    videoStore.download(url, (file, error) -> {
-                        if (destroyed) return;
+                    AlertDialog downloadDialog = new AlertDialog.Builder(this)
+                            .setTitle("Đang tải video")
+                            .setMessage("Đang kết nối...")
+                            .setNegativeButton("Hủy", null)
+                            .create();
+                    SavedVideoStore.Download[] active = new SavedVideoStore.Download[1];
+                    active[0] = videoStore.download(url, (bytes, total) -> {
+                        if (destroyed || !downloadDialog.isShowing()) return;
+                        String size = android.text.format.Formatter.formatShortFileSize(this, bytes);
+                        String detail = total > 0
+                                ? (bytes * 100 / total) + "% • " + size
+                                : size;
+                        downloadDialog.setMessage("Đã tải: " + detail);
+                    }, (file, error) -> {
+                        downloadDialog.dismiss();
+                        if (destroyed || active[0].isCancelled()) return;
                         if (error != null) {
                             new AlertDialog.Builder(this).setTitle("Không thể tải video")
                                     .setMessage(error.getMessage()).setPositiveButton("Đóng", null).show();
@@ -366,6 +379,13 @@ public final class MainActivity extends Activity {
                         showStatus("Đã lưu video");
                         openSavedVideo(file);
                     });
+                    downloadDialog.setOnShowListener(d ->
+                            downloadDialog.getButton(AlertDialog.BUTTON_NEGATIVE)
+                                    .setOnClickListener(v -> {
+                                        active[0].cancel();
+                                        downloadDialog.dismiss();
+                                    }));
+                    downloadDialog.show();
                 }).show();
     }
 
