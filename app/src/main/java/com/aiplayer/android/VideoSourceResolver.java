@@ -51,18 +51,17 @@ final class VideoSourceResolver {
      * Never follow arbitrary page links or attempt to use cookies/authenticated media.
      */
     static String extractPublicMediaUrl(String html) throws Exception {
-        // Telegram's public widget can put the video src on a <div>, not a <video> tag.
-        // Restrict extraction to explicit media elements instead of arbitrary links.
-        Pattern tags = Pattern.compile("<(?:video|source|div)\\\\b[^>]*>", Pattern.CASE_INSENSITIVE);
-        Pattern src = Pattern.compile("\\\\bsrc\\\\s*=\\\\s*[\\\"']([^\\\"']+)[\\\"']", Pattern.CASE_INSENSITIVE);
-        Pattern klass = Pattern.compile("\\\\bclass\\\\s*=\\\\s*[\\\"']([^\\\"']+)[\\\"']", Pattern.CASE_INSENSITIVE);
+        // Telegram public widgets can place the direct media src on a div.
+        Pattern tags = Pattern.compile("<(?:video|source|div)\\b[^>]*>", Pattern.CASE_INSENSITIVE);
+        Pattern src = Pattern.compile("\\bsrc\\s*=\\s*[\"']([^\"']+)[\"']", Pattern.CASE_INSENSITIVE);
+        Pattern klass = Pattern.compile("\\bclass\\s*=\\s*[\"']([^\"']+)[\"']", Pattern.CASE_INSENSITIVE);
         Matcher elements = tags.matcher(html);
         while (elements.find()) {
             String tag = elements.group();
             if (tag.regionMatches(true, 1, "div", 0, 3)) {
                 Matcher classes = klass.matcher(tag);
                 if (!classes.find() ||
-                        !java.util.Arrays.asList(classes.group(1).split("\\\\s+"))
+                        !java.util.Arrays.asList(classes.group(1).split("\\s+"))
                                 .contains("tgme_widget_message_video")) continue;
             }
             Matcher attribute = src.matcher(tag);
@@ -73,7 +72,7 @@ final class VideoSourceResolver {
                 VideoUrlPolicy.extension(url);
                 return url.toExternalForm();
             } catch (IllegalArgumentException | java.net.MalformedURLException ignored) {
-                // An image or thumbnail is not a playable video.
+                // Ignore thumbnails and non-video media sources.
             }
         }
         throw new IllegalArgumentException("Bài đăng không cung cấp video công khai trực tiếp");
