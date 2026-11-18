@@ -158,8 +158,12 @@ final class TdJsonTelegramSessionClient implements TelegramSessionClient {
         }
     }
 
-    private JSONObject request(String name) throws Exception {
-        return new JSONObject().put("@type", name);
+    private JSONObject request(String name) {
+        try {
+            return new JSONObject().put("@type", name);
+        } catch (org.json.JSONException error) {
+            throw new IllegalStateException("Cannot create TDLib request", error);
+        }
     }
 
     private void send(JSONObject data, java.util.function.Consumer<JSONObject> handler) {
