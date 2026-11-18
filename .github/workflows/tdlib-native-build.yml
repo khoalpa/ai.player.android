@@ -1,9 +1,7 @@
 name: Verify official TDLib JSONJava native Android build
 
 on:
-  push:
-    branches:
-      - feat/telegram-tdlib-session
+  pull_request:
     paths:
       - 'scripts/build-tdlib-jsonjava.sh'
       - '.github/workflows/tdlib-native-build.yml'
@@ -15,7 +13,7 @@ concurrency:
 
 jobs:
   native-jsonjava:
-    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/feat/telegram-tdlib-session'
+    if: github.event_name == 'workflow_dispatch' || github.head_ref == 'feat/telegram-tdlib-session'
     runs-on: ubuntu-latest
     timeout-minutes: 300
     permissions:
