@@ -270,7 +270,8 @@ public final class MainActivity extends Activity {
         Button button = new Button(this);
         button.setText(label);
         button.setAllCaps(false);
-        button.setMinHeight(dp(40));
+        button.setMinHeight(dp(48)); // Maintain an accessible touch target.
+        button.setMinimumHeight(dp(48));
         button.setTextSize(12);
         button.setPadding(dp(8), dp(4), dp(8), dp(4));
         button.setOnClickListener(v -> action.run());
@@ -358,11 +359,12 @@ public final class MainActivity extends Activity {
         Button button = new Button(this);
         button.setText(label);
         button.setAllCaps(false);
-        button.setMinHeight(dp(40));
+        button.setMinHeight(dp(48)); // Maintain an accessible touch target.
+        button.setMinimumHeight(dp(48));
         button.setTextSize(12);
         button.setPadding(dp(8), dp(4), dp(8), dp(4));
         button.setOnClickListener(view -> action.run());
-        row.addView(button, new LinearLayout.LayoutParams(0, -2, 1));
+        row.addView(button, new LinearLayout.LayoutParams(0, dp(48), 1));
         return button;
     }
 
