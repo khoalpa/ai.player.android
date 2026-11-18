@@ -377,8 +377,9 @@ public final class MainActivity extends Activity {
                 .setNegativeButton("Đóng", null).create();
         resolving.show();
         new TelegramPublicResolver().resolve(source, (media, error) -> {
+            if (destroyed || !resolving.isShowing()) return;
             resolving.dismiss();
-            if (destroyed || error != null) {
+            if (error != null) {
                 if (!destroyed) showVideoDownloadError(
                         "Không tìm thấy video công khai trực tiếp. Bài đăng riêng tư hoặc yêu cầu đăng nhập hiện chưa được hỗ trợ."
                                 + (error == null ? "" : "\\n" + error.getMessage()));
