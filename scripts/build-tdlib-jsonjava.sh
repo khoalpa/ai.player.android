@@ -44,6 +44,8 @@ mkdir -p "$WORK/output"
 docker build \
   --file "$DOCKERFILE" \
   --build-arg "COMMIT_HASH=$TDLIB_COMMIT" \
+  --build-arg "ANDROID_NDK_VERSION=28.2.13676358" \
+  --build-arg "OPENSSL_VERSION=openssl-3.5.9" \
   --build-arg "TDLIB_INTERFACE=JSONJava" \
   --output "type=local,dest=$WORK/output" \
   "$WORK/source/example/android"
@@ -67,5 +69,7 @@ for file in "$WORK"/unpacked/tdlib/libs/*/libtdjsonjava.so; do
   sha256sum "$ROOT/app/src/main/jniLibs/$abi/libtdjsonjava.so"
 done
 test "$found" -eq 1 || { echo "No JSONJava native libraries" >&2; exit 4; }
+echo "OpenSSL release: 3.5.9 LTS, upstream tag commit 45e844fa2a14ec92d146bd8f5778ac130b6625fb"
+echo "Android NDK: 28.2.13676358"
 echo "Pinned TDLib SHA: $TDLIB_COMMIT"
 echo "Review generated native binaries and licenses before committing to PR #5."
