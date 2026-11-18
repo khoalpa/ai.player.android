@@ -70,6 +70,15 @@ final class TdJsonTelegramSessionClient implements TelegramSessionClient {
             Thread worker = new Thread(this::poll, "AIPlayer-TDLib");
             worker.setDaemon(true);
             worker.start();
+            // A new TDLib JSON client does not emit updates until the first request.
+            send(request("getAuthorizationState"), response -> {
+                if ("error".equals(response.optString("@type"))) {
+                    flow.onError();
+                    if (stateListener != null) stateListener.authorizationChanged(flow.state());
+                } else if (response.optString("@type").startsWith("authorizationState")) {
+                    handleAuthorizationState(response.optString("@type"));
+                }
+            });
             callback.finished(null);
         } catch (LinkageError error) {
             nativeLoaded = false;
@@ -88,10 +97,7 @@ final class TdJsonTelegramSessionClient implements TelegramSessionClient {
                 if ("updateAuthorizationState".equals(object.optString("@type"))) {
                     JSONObject state = object.optJSONObject("authorization_state");
                     String kind = state == null ? null : state.optString("@type", null);
-                    flow.onTdlibAuthorizationState(kind);
-                    if ("authorizationStateWaitTdlibParameters".equals(kind)) configureTdlib();
-                    Listener listener = stateListener;
-                    if (listener != null) main.post(() -> listener.authorizationChanged(flow.state()));
+                    handleAuthorizationState(kind);
                     continue;
                 }
                 if ("updateFile".equals(object.optString("@type"))) {
@@ -109,6 +115,13 @@ final class TdJsonTelegramSessionClient implements TelegramSessionClient {
             Listener listener = stateListener;
             if (listener != null) main.post(() -> listener.authorizationChanged(flow.state()));
         }
+    }
+
+    private void handleAuthorizationState(String kind) {
+        flow.onTdlibAuthorizationState(kind);
+        if ("authorizationStateWaitTdlibParameters".equals(kind)) configureTdlib();
+        Listener listener = stateListener;
+        if (listener != null) main.post(() -> listener.authorizationChanged(flow.state()));
     }
 
     private void configureTdlib() {
