@@ -382,7 +382,7 @@ public final class MainActivity extends Activity {
             if (error != null) {
                 if (!destroyed) showVideoDownloadError(
                         "Không tìm thấy video công khai trực tiếp. Bài đăng riêng tư hoặc yêu cầu đăng nhập hiện chưa được hỗ trợ."
-                                + (error == null ? "" : "\\n" + error.getMessage()));
+                                + "\n" + error.getMessage());
                 return;
             }
             startVideoDownload(media);
