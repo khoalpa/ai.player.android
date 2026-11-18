@@ -381,7 +381,7 @@ public final class MainActivity extends Activity {
             resolving.dismiss();
             if (error != null) {
                 if (!destroyed) showVideoDownloadError(
-                        "Không tìm thấy video công khai trực tiếp. Bài đăng riêng tư hoặc yêu cầu đăng nhập hiện chưa được hỗ trợ."
+                        "Không lấy được URL video từ bản nhúng công khai của Telegram. Điều này không có nghĩa bài đăng không có video. Hãy kiểm tra bài đăng trong Telegram hoặc dùng tệp đã lưu trên thiết bị."
                                 + "\n" + error.getMessage());
                 return;
             }
