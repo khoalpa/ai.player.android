@@ -26,6 +26,22 @@ jobs:
         run: |
           test -s app/src/main/jniLibs/arm64-v8a/libtdjsonjava.so
           find app/src/main/jniLibs -type f -name 'libtdjsonjava.so' -print -exec sha256sum {} \;
+      - name: Check 16 KB Android ELF page alignment
+        run: |
+          python3 - <<'PY'
+          import glob
+          import subprocess
+          libraries = glob.glob('app/src/main/jniLibs/*/libtdjsonjava.so')
+          if not libraries:
+              raise SystemExit('No native TDLib libraries to inspect')
+          for path in libraries:
+              output = subprocess.check_output(['readelf', '-lW', path], text=True)
+              load_alignments = [int(line.split()[-1], 16) for line in output.splitlines()
+                                 if line.lstrip().startswith('LOAD ')]
+              if not load_alignments or any(value < 16384 for value in load_alignments):
+                  raise SystemExit(f'{path}: not 16 KB ELF page aligned: {load_alignments}')
+              print(f'{path}: verified 16 KB ELF alignment')
+          PY
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
