@@ -4,6 +4,8 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.net.Uri;
+import android.widget.EditText;
+import java.io.File;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -69,6 +71,7 @@ public final class MainActivity extends Activity {
     private VideoWork work;
     private PlaybackSessionStore sessionStore;
     private Uri savedVideo;
+    private SavedVideoStore videoStore;
     private Uri currentVideo;
     private String currentVideoIdentity;
     private long savedTranscriptVersion = -1;
@@ -106,6 +109,7 @@ public final class MainActivity extends Activity {
         work = VideoWork.obtain(this);
         session = work.session;
         player = new ExoPlayer.Builder(this).build();
+        videoStore = new SavedVideoStore(this);
         setContentView(buildContent());
         speech = new CueSpeech(this, this::onSpeechError);
         work.attach(workObserver);
@@ -165,7 +169,7 @@ public final class MainActivity extends Activity {
         title.setEllipsize(TextUtils.TruncateAt.END);
         title.setPadding(dp(8), 0, dp(4), 0);
         chrome.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
-        iconButton(chrome, R.drawable.ic_control_open, "Mở video", false, this::openPicker);
+        iconButton(chrome, R.drawable.ic_control_open, "Mở video", false, this::showVideoSources);
         Button menu = iconButton(chrome, R.drawable.ic_control_more, "Tùy chọn video", false, null);
         menu.setOnClickListener(anchor -> {
             PopupMenu popup = new PopupMenu(this, anchor);
@@ -197,7 +201,7 @@ public final class MainActivity extends Activity {
         FrameLayout.LayoutParams centered = new FrameLayout.LayoutParams(-1, -2, Gravity.CENTER);
         surface.addView(welcome, centered);
         empty = welcome;
-        Button openVideo = compactButton(welcome, "Mở video", this::openPicker);
+        Button openVideo = compactButton(welcome, "Mở video", this::showVideoSources);
         stylePrimaryButton(openVideo);
         setLeadingIcon(openVideo, R.drawable.ic_control_open);
         compactButton(welcome, "Không tìm thấy video?", () -> new AlertDialog.Builder(this)
@@ -330,6 +334,82 @@ public final class MainActivity extends Activity {
         transcriptPanel.setVisibility(visible ? View.VISIBLE : View.GONE);
         transcript.setSelected(visible);
         describeControl(transcript, visible ? "Đóng transcript" : "Mở transcript");
+    }
+
+    private void showVideoSources() {
+        new AlertDialog.Builder(this).setTitle("Mở video")
+                .setItems(new String[]{"Chọn video trên thiết bị", "Tải video từ URL", "Video đã lưu"},
+                        (dialog, which) -> {
+                            if (which == 0) openPicker();
+                            else if (which == 1) showDownloadDialog();
+                            else showSavedVideos();
+                        }).show();
+    }
+
+    private void showDownloadDialog() {
+        EditText address = new EditText(this);
+        address.setSingleLine(true);
+        address.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI);
+        address.setHint("https://example.com/video.mp4");
+        new AlertDialog.Builder(this).setTitle("Tải video từ URL")
+                .setView(address).setNegativeButton("Hủy", null)
+                .setPositiveButton("Tải", (dialog, which) -> {
+                    String url = address.getText().toString().trim();
+                    showStatus("Đang tải video...");
+                    videoStore.download(url, (file, error) -> {
+                        if (destroyed) return;
+                        if (error != null) {
+                            new AlertDialog.Builder(this).setTitle("Không thể tải video")
+                                    .setMessage(error.getMessage()).setPositiveButton("Đóng", null).show();
+                            return;
+                        }
+                        showStatus("Đã lưu video");
+                        openSavedVideo(file);
+                    });
+                }).show();
+    }
+
+    private void showSavedVideos() {
+        File[] files = videoStore.list();
+        if (files.length == 0) {
+            new AlertDialog.Builder(this).setTitle("Video đã lưu")
+                    .setMessage("Chưa có video nào được tải về.")
+                    .setPositiveButton("Đóng", null).show();
+            return;
+        }
+        String[] names = new String[files.length];
+        for (int i = 0; i < files.length; i++) names[i] = files[i].getName();
+        new AlertDialog.Builder(this).setTitle("Video đã lưu")
+                .setItems(names, (dialog, which) -> openSavedVideo(files[which]))
+                .setNeutralButton("Xóa video", (dialog, which) -> showDeleteSavedVideos())
+                .setNegativeButton("Đóng", null).show();
+    }
+
+    private void showDeleteSavedVideos() {
+        File[] files = videoStore.list();
+        String[] names = new String[files.length];
+        for (int i = 0; i < files.length; i++) names[i] = files[i].getName();
+        new AlertDialog.Builder(this).setTitle("Chọn video cần xóa")
+                .setItems(names, (dialog, which) -> new AlertDialog.Builder(this)
+                        .setTitle("Xóa video?")
+                        .setMessage(files[which].getName())
+                        .setNegativeButton("Hủy", null)
+                        .setPositiveButton("Xóa", (d, w) -> {
+                            if (files[which].delete()) showStatus("Đã xóa video");
+                            else showStatus("Không thể xóa video");
+                        }).show())
+                .setNegativeButton("Đóng", null).show();
+    }
+
+    private void openSavedVideo(File file) {
+        Uri uri = Uri.fromFile(file);
+        int requestId = ++openRequest;
+        player.pause();
+        savePlaybackSession();
+        sessionStore.load(uri, restored -> {
+            if (destroyed || requestId != openRequest) return;
+            openVideo(uri, restored);
+        });
     }
 
     private void openPicker() {
