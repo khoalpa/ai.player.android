@@ -28,6 +28,26 @@ jobs:
         run: |
           test -s app/src/main/jniLibs/arm64-v8a/libtdjsonjava.so
           find app/src/main/jniLibs -type f -name 'libtdjsonjava.so' -print -exec sha256sum {} \;
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Configure Android SDK
+        run: |
+          echo "ANDROID_HOME=${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}" >> "$GITHUB_ENV"
+          "${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-35" "build-tools;35.0.0"
+      - name: Build APK with verified TDLib native candidate
+        run: |
+          chmod +x ./gradlew
+          ./gradlew --no-daemon :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
+          unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -F 'lib/arm64-v8a/libtdjsonjava.so'
+      - name: Upload TDLib-enabled Android debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-player-tdlib-native-debug-apk
+          if-no-files-found: error
+          retention-days: 14
+          path: app/build/outputs/apk/debug/app-debug.apk
       - name: Upload audited TDLib Android native candidates
         uses: actions/upload-artifact@v4
         with:
