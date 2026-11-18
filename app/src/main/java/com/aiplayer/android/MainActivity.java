@@ -73,6 +73,7 @@ public final class MainActivity extends Activity {
     private Uri savedVideo;
     private SavedVideoStore videoStore;
     private TelegramSessionClient telegramSession;
+    private TelegramAuthorizationFlow.State lastTelegramState;
     private Uri currentVideo;
     private String currentVideoIdentity;
     private long savedTranscriptVersion = -1;
@@ -152,6 +153,7 @@ public final class MainActivity extends Activity {
             }
         });
         handleSharedVideoIntent(getIntent());
+        if (!Intent.ACTION_SEND.equals(getIntent().getAction())) restoreTelegramSession();
     }
 
     @Override
@@ -448,6 +450,21 @@ public final class MainActivity extends Activity {
         });
     }
 
+    private void restoreTelegramSession() {
+        TelegramApiCredentialStore.Credentials config =
+                new TelegramApiCredentialStore(this).load();
+        if (config == null) return;
+        TdJsonTelegramSessionClient restored =
+                new TdJsonTelegramSessionClient(this, config.apiId, config.apiHash);
+        if (!restored.isNativeAvailable()) return;
+        telegramSession = restored;
+        restored.start(state -> {
+            if (!destroyed) onTelegramAuthState(state);
+        }, error -> {
+            if (!destroyed && error != null) showVideoDownloadError(error);
+        });
+    }
+
     private void showTelegramAccount() {
         if (telegramSession != null && telegramSession.authorizationState()
                 == TelegramAuthorizationFlow.State.READY) {
@@ -457,8 +474,18 @@ public final class MainActivity extends Activity {
                     .setPositiveButton("Đăng xuất", (dialog, which) ->
                             telegramSession.logoutAndClearSession(error -> {
                                 if (error != null) showVideoDownloadError(error);
-                                else showStatus("Đã yêu cầu đăng xuất Telegram");
+                                else {
+                                    new TelegramApiCredentialStore(this).clear();
+                                    showStatus("Đã yêu cầu đăng xuất Telegram; cấu hình API đã xóa");
+                                }
                             })).show();
+            return;
+        }
+        if (telegramSession != null && telegramSession.isNativeAvailable()) {
+            new AlertDialog.Builder(this).setTitle("Tài khoản Telegram")
+                    .setMessage("Trạng thái TDLib: " + telegramSession.authorizationState()
+                            + ". Hoàn tất bước xác thực đang hiển thị hoặc đăng xuất trước khi đổi tài khoản.")
+                    .setPositiveButton("Đóng", null).show();
             return;
         }
         TdJsonTelegramSessionClient probe = new TdJsonTelegramSessionClient(this, 0, "");
@@ -492,6 +519,16 @@ public final class MainActivity extends Activity {
                     }
                     String apiHash = hash.getText().toString().trim();
                     hash.setText("");
+                    if (apiHash.length() != 32 || !apiHash.matches("[0-9a-fA-F]{32}")) {
+                        showVideoDownloadError("Telegram API hash phải là 32 ký tự hexadecimal");
+                        return;
+                    }
+                    try {
+                        new TelegramApiCredentialStore(this).save(apiId, apiHash);
+                    } catch (Exception failure) {
+                        showVideoDownloadError("Không lưu an toàn được cấu hình Telegram bằng Android Keystore");
+                        return;
+                    }
                     telegramSession = new TdJsonTelegramSessionClient(this, apiId, apiHash);
                     telegramSession.start(state -> {
                         if (!destroyed) onTelegramAuthState(state);
@@ -502,6 +539,8 @@ public final class MainActivity extends Activity {
     }
 
     private void onTelegramAuthState(TelegramAuthorizationFlow.State state) {
+        if (state == lastTelegramState) return;
+        lastTelegramState = state;
         switch (state) {
             case PHONE_REQUIRED:
                 promptTelegramCredential("Số điện thoại Telegram", "Số điện thoại quốc tế, ví dụ +84...",
@@ -1270,6 +1309,8 @@ public final class MainActivity extends Activity {
         work.detach(workObserver);
         sessionStore.close();
         speech.close();
+        if (telegramSession instanceof TdJsonTelegramSessionClient)
+            ((TdJsonTelegramSessionClient) telegramSession).closeTransport();
         super.onDestroy();
     }
 
