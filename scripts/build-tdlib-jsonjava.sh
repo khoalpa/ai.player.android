@@ -31,7 +31,12 @@ old = 'td/example/android/build-tdlib.sh SDK "$ANDROID_NDK_VERSION" openssl "$AN
 new = 'td/example/android/build-tdlib.sh SDK "$ANDROID_NDK_VERSION" openssl "$ANDROID_STL" "$TDLIB_INTERFACE" 26 "arm64-v8a" &&'
 if s.count(old) != 1:
     raise SystemExit("Official TDLib Dockerfile layout changed; manual review needed")
-p.write_text(s.replace(old, new))
+s = s.replace(old, new)
+openssl_line = 'RUN ./build-openssl.sh SDK "$ANDROID_NDK_VERSION" openssl "$OPENSSL_VERSION" "$BUILD_SHARED_OPENSSL_LIBS"'
+optimized_line = 'RUN sed -i "s/for ABI in arm64-v8a armeabi-v7a x86_64 x86 ; do/for ABI in arm64-v8a ; do/" build-openssl.sh && ./build-openssl.sh SDK "$ANDROID_NDK_VERSION" openssl "$OPENSSL_VERSION" "$BUILD_SHARED_OPENSSL_LIBS"'
+if s.count(openssl_line) != 1:
+    raise SystemExit("Official OpenSSL Docker build layout changed; manual review needed")
+p.write_text(s.replace(openssl_line, optimized_line))
 PY
 echo "Reviewed arm64-v8a build recipe:"
 sha256sum "$DOCKERFILE"
