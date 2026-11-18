@@ -1,32 +1,50 @@
 name: Android build
+
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
-permissions:
-  contents: read
+
 jobs:
-  build:
+  android-checks:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '21'
-      - uses: android-actions/setup-android@v3
-        with:
-          packages: 'platform-tools platforms;android-35'
-      - uses: gradle/actions/setup-gradle@v4
-      - name: Build and run unit tests
-        run: bash gradlew testDebugUnitTest assembleDebug --stacktrace
-      - uses: actions/upload-artifact@v4
+          java-version: '17'
+      # GitHub's Ubuntu Android runner already provides command-line SDK tools.
+      # Avoid setup-android@v3 installing the obsolete 'tools' SDK package.
+      - name: Configure Android SDK
+        run: |
+          echo "ANDROID_HOME=${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}" >> "$GITHUB_ENV"
+          "${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-35" "build-tools;35.0.0"
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+      - name: Build, unit tests and lint
+        run: ./gradlew --no-daemon :app:assembleDebug :app:testDebugUnitTest :app:lintDebug --stacktrace
+      - name: Upload reports
         if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: android-build-results
-          path: |
-            app/build/outputs/apk/debug/*.apk
-            app/build/reports/tests/
-            app/build/test-results/
           if-no-files-found: ignore
+          path: |
+            app/build/reports/**
+            app/build/test-results/**
+            app/build/outputs/lint-results-*.*
+            app/build/intermediates/lint_intermediate_text_report/**
+      - name: Upload installable debug APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-player-debug-apk
+          if-no-files-found: error
+          retention-days: 14
+          path: app/build/outputs/apk/debug/app-debug.apk
