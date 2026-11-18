@@ -16,8 +16,28 @@ git -C "$WORK/source" fetch origin "$TDLIB_COMMIT"
 git -C "$WORK/source" checkout --detach "$TDLIB_COMMIT"
 test "$(git -C "$WORK/source" rev-parse HEAD)" = "$TDLIB_COMMIT"
 
+# Build only arm64-v8a during Android device validation. Avoid compiling four
+# architectures on every candidate build. Keep upstream commit and build args pinned.
+# The official Dockerfile uses all four ABIs by default; derive a reviewed local
+# copy instead of modifying the checked-out official TDLib source.
+DOCKERFILE="$WORK/Dockerfile.arm64"
+cp "$WORK/source/example/android/Dockerfile" "$DOCKERFILE"
+python3 - "$DOCKERFILE" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+s = p.read_text()
+old = 'td/example/android/build-tdlib.sh SDK "$ANDROID_NDK_VERSION" openssl "$ANDROID_STL" "$TDLIB_INTERFACE" &&'
+new = 'td/example/android/build-tdlib.sh SDK "$ANDROID_NDK_VERSION" openssl "$ANDROID_STL" "$TDLIB_INTERFACE" 26 "arm64-v8a" &&'
+if s.count(old) != 1:
+    raise SystemExit("Official TDLib Dockerfile layout changed; manual review needed")
+p.write_text(s.replace(old, new))
+PY
+echo "Reviewed arm64-v8a build recipe:"
+sha256sum "$DOCKERFILE"
 mkdir -p "$WORK/output"
 docker build \
+  --file "$DOCKERFILE" \
   --build-arg "COMMIT_HASH=$TDLIB_COMMIT" \
   --build-arg "TDLIB_INTERFACE=JSONJava" \
   --output "type=local,dest=$WORK/output" \
