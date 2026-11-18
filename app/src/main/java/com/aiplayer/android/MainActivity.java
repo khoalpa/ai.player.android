@@ -72,6 +72,7 @@ public final class MainActivity extends Activity {
     private PlaybackSessionStore sessionStore;
     private Uri savedVideo;
     private SavedVideoStore videoStore;
+    private TelegramSessionClient telegramSession;
     private Uri currentVideo;
     private String currentVideoIdentity;
     private long savedTranscriptVersion = -1;
@@ -217,6 +218,10 @@ public final class MainActivity extends Activity {
             popup.getMenu().add("Đổi ngôn ngữ bản dịch")
                     .setEnabled(session.targetLanguage != null && !session.busy)
                     .setOnMenuItemClickListener(item -> { chooseTranslationLanguage(); return true; });
+            popup.getMenu().add("Tài khoản Telegram (TDLib)").setOnMenuItemClickListener(item -> {
+                showTelegramAccount();
+                return true;
+            });
             popup.getMenu().add("Cài đặt").setOnMenuItemClickListener(item -> {
                 showSettings();
                 return true;
@@ -407,6 +412,20 @@ public final class MainActivity extends Activity {
     }
 
     private void resolveTelegramPost(VideoSourceResolver.Source source) {
+        if (telegramSession != null && telegramSession.isNativeAvailable()
+                && telegramSession.authorizationState() == TelegramAuthorizationFlow.State.READY) {
+            new AlertDialog.Builder(this).setTitle("Tải video Telegram")
+                    .setItems(new String[]{"Tải bằng tài khoản TDLib", "Thử bản công khai"},
+                            (dialog, which) -> {
+                                if (which == 0) downloadViaTdlib(source);
+                                else resolveTelegramPublicPost(source);
+                            }).show();
+            return;
+        }
+        resolveTelegramPublicPost(source);
+    }
+
+    private void resolveTelegramPublicPost(VideoSourceResolver.Source source) {
         AlertDialog resolving = new AlertDialog.Builder(this)
                 .setTitle("Telegram công khai")
                 .setMessage("Đang tìm video từ bài đăng công khai...")
@@ -420,12 +439,152 @@ public final class MainActivity extends Activity {
                         .setTitle("Không thể tải video Telegram")
                         .setMessage("Trang nhúng không cung cấp tệp video trực tiếp. Bạn có thể mở bài đăng bằng tài khoản Telegram đã đăng nhập; nếu Telegram cho phép, hãy chia sẻ tệp video tới AI Player hoặc lưu video rồi chọn tệp trên thiết bị.\n" + error.getMessage())
                         .setNegativeButton("Đóng", null)
+                        .setNeutralButton("Tài khoản TDLib", (d, w) -> showTelegramAccount())
                         .setPositiveButton("Mở trong Telegram", (d, w) -> openTelegramPost(source.url))
                         .show();
                 return;
             }
             startVideoDownload(media);
         });
+    }
+
+    private void showTelegramAccount() {
+        if (telegramSession != null && telegramSession.authorizationState()
+                == TelegramAuthorizationFlow.State.READY) {
+            new AlertDialog.Builder(this).setTitle("Tài khoản Telegram")
+                    .setMessage("TDLib đã xác thực. Bạn có thể tải video của các bài đăng được phép truy cập.")
+                    .setNegativeButton("Đóng", null)
+                    .setPositiveButton("Đăng xuất", (dialog, which) ->
+                            telegramSession.logoutAndClearSession(error -> {
+                                if (error != null) showVideoDownloadError(error);
+                                else showStatus("Đã yêu cầu đăng xuất Telegram");
+                            })).show();
+            return;
+        }
+        TdJsonTelegramSessionClient probe = new TdJsonTelegramSessionClient(this, 0, "");
+        if (!probe.isNativeAvailable()) {
+            new AlertDialog.Builder(this).setTitle("TDLib chưa được cài đặt")
+                    .setMessage("Cần build và đóng gói thư viện TDLib JSONJava chính thức (libtdjsonjava.so) trước khi có thể đăng nhập. AI Player không thể đăng nhập chỉ bằng giao diện.")
+                    .setPositiveButton("Đóng", null).show();
+            return;
+        }
+
+        LinearLayout form = column();
+        EditText id = new EditText(this);
+        id.setHint("Telegram API ID (my.telegram.org)");
+        id.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        form.addView(id);
+        EditText hash = new EditText(this);
+        hash.setHint("Telegram API hash");
+        hash.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        form.addView(hash);
+        new AlertDialog.Builder(this).setTitle("Kết nối Telegram TDLib")
+                .setMessage("Sử dụng API ID/hash ứng dụng của bạn. Không chia sẻ API hash hay mã xác minh trong tin nhắn hoặc log.")
+                .setView(form).setNegativeButton("Hủy", null)
+                .setPositiveButton("Tiếp tục", (dialog, which) -> {
+                    int apiId;
+                    try {
+                        apiId = Integer.parseInt(id.getText().toString().trim());
+                    } catch (NumberFormatException invalid) {
+                        showVideoDownloadError("API ID phải là số nguyên dương");
+                        return;
+                    }
+                    String apiHash = hash.getText().toString().trim();
+                    hash.setText("");
+                    telegramSession = new TdJsonTelegramSessionClient(this, apiId, apiHash);
+                    telegramSession.start(state -> {
+                        if (!destroyed) onTelegramAuthState(state);
+                    }, error -> {
+                        if (error != null && !destroyed) showVideoDownloadError(error);
+                    });
+                }).show();
+    }
+
+    private void onTelegramAuthState(TelegramAuthorizationFlow.State state) {
+        switch (state) {
+            case PHONE_REQUIRED:
+                promptTelegramCredential("Số điện thoại Telegram", "Số điện thoại quốc tế, ví dụ +84...",
+                        false, (value, callback) -> telegramSession.submitPhone(value, callback));
+                break;
+            case CODE_REQUIRED:
+                promptTelegramCredential("Mã xác minh Telegram", "Mã OTP Telegram",
+                        true, (value, callback) -> {
+                            char[] code = value.toCharArray();
+                            telegramSession.submitCode(code, callback);
+                        });
+                break;
+            case PASSWORD_REQUIRED:
+                promptTelegramCredential("Xác thực hai bước", "Mật khẩu Telegram 2FA",
+                        true, (value, callback) -> {
+                            char[] password = value.toCharArray();
+                            telegramSession.submitTwoStepPassword(password, callback);
+                        });
+                break;
+            case READY:
+                showStatus("Đã xác thực Telegram qua TDLib");
+                break;
+            case ERROR:
+                showVideoDownloadError("TDLib gặp lỗi khởi tạo hoặc xác thực");
+                break;
+            case EMAIL_REQUIRED:
+            case EMAIL_CODE_REQUIRED:
+            case REGISTRATION_REQUIRED:
+            case QR_CONFIRMATION_REQUIRED:
+                new AlertDialog.Builder(this).setTitle("Bước xác thực bổ sung")
+                        .setMessage("Tài khoản yêu cầu phương thức xác thực Telegram bổ sung chưa có giao diện trong bản thử nghiệm này. Không thể coi là đã đăng nhập.")
+                        .setPositiveButton("Đóng", null).show();
+                break;
+            default:
+                // INITIALIZING, LOGGING_OUT, CLOSED: no credential prompt.
+                break;
+        }
+    }
+
+    private interface TelegramCredentialSubmit {
+        void submit(String value, TelegramSessionClient.Completion callback);
+    }
+
+    private void promptTelegramCredential(String title, String hint, boolean sensitive,
+                                          TelegramCredentialSubmit action) {
+        EditText field = new EditText(this);
+        field.setHint(hint);
+        field.setSingleLine(true);
+        if (sensitive) field.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        new AlertDialog.Builder(this).setTitle(title).setView(field)
+                .setNegativeButton("Hủy", null)
+                .setPositiveButton("Xác nhận", (dialog, which) -> {
+                    String value = field.getText().toString().trim();
+                    field.setText("");
+                    action.submit(value, error -> {
+                        if (!destroyed && error != null) showVideoDownloadError(error);
+                    });
+                }).show();
+    }
+
+    private void downloadViaTdlib(VideoSourceResolver.Source source) {
+        if (telegramSession == null) {
+            showTelegramAccount();
+            return;
+        }
+        showStatus("Đang tải video bằng tài khoản Telegram...");
+        new TelegramVideoDownloadGate(telegramSession).download(source.url.toExternalForm(),
+                (path, error) -> {
+                    if (destroyed) return;
+                    if (error != null) {
+                        showVideoDownloadError(error);
+                        return;
+                    }
+                    new TdlibSavedVideoImporter(this).importFile(path, (file, failure) -> {
+                        if (destroyed) return;
+                        if (failure != null) showVideoDownloadError(failure.getMessage());
+                        else {
+                            showStatus("Đã lưu video Telegram");
+                            openSavedVideo(file);
+                        }
+                    });
+                });
     }
 
     private void openTelegramPost(java.net.URL post) {
