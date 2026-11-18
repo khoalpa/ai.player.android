@@ -10,6 +10,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.Gravity;
+import android.view.ContextThemeWrapper;
 import android.view.MotionEvent;
 import android.view.accessibility.AccessibilityManager;
 import android.widget.ArrayAdapter;
@@ -268,24 +269,32 @@ public final class MainActivity extends Activity {
         playbackMenuBackground = optionsMenu.getBackground();
         homeMenuBackground = PlayerHomeView.ripple(Color.TRANSPARENT, dp(14));
         optionsMenu.setOnClickListener(anchor -> {
-            PopupMenu popup = new PopupMenu(this, anchor);
+            PopupMenu popup = new PopupMenu(new ContextThemeWrapper(this, R.style.PlayerMenuTheme),
+                    anchor, Gravity.END);
+            int applicationGroup = hasVideo ? 1 : 0;
+            int exitGroup = 1;
+            if (android.os.Build.VERSION.SDK_INT >= 28) popup.getMenu().setGroupDividerEnabled(true);
             if (!hasVideo) {
                 popup.getMenu().add("Telegram").setOnMenuItemClickListener(item -> {
                     showTelegramSettings();
                     return true;
                 });
             } else {
-                popup.getMenu().add("Nhập SRT/VTT").setEnabled(!session.busy)
+                popup.getMenu().add("Nhập phụ đề (SRT/VTT)").setEnabled(!session.busy)
                         .setOnMenuItemClickListener(item -> { pick(OPEN_SUBTITLES, "*/*"); return true; });
+                popup.getMenu().add("Đổi ngôn ngữ dịch")
+                        .setEnabled(session.targetLanguage != null && !session.busy)
+                        .setOnMenuItemClickListener(item -> { chooseTranslationLanguage(); return true; });
                 popup.getMenu().add("Tạo lại transcript")
                         .setEnabled(!session.tracks.isEmpty() && !session.cues.isEmpty() && !session.busy)
                         .setOnMenuItemClickListener(item -> { chooseTrack(); return true; });
-                popup.getMenu().add("Đổi ngôn ngữ bản dịch")
-                        .setEnabled(session.targetLanguage != null && !session.busy)
-                        .setOnMenuItemClickListener(item -> { chooseTranslationLanguage(); return true; });
             }
-            popup.getMenu().add("Cài đặt").setOnMenuItemClickListener(item -> {
+            popup.getMenu().add(applicationGroup, 0, 0, "Cài đặt").setOnMenuItemClickListener(item -> {
                 showSettings();
+                return true;
+            });
+            popup.getMenu().add(exitGroup, 0, 0, "Thoát").setOnMenuItemClickListener(item -> {
+                requestExit();
                 return true;
             });
             popup.show();
@@ -367,9 +376,8 @@ public final class MainActivity extends Activity {
         shortcuts = row(root);
         subtitlesButton = iconButton(shortcuts, R.drawable.ic_control_captions, "Phụ đề", true, () -> showMode(false));
         speechButton = iconButton(shortcuts, R.drawable.ic_control_mute, "Đọc thành tiếng", true, () -> showMode(true));
-        transcript = iconButton(shortcuts, R.drawable.ic_control_transcript, "Mở transcript", true, () -> {
-            toggleTranscript();
-        });
+        transcript = iconButton(shortcuts, R.drawable.ic_control_transcript, "Mở transcript", true,
+                this::toggleTranscript);
         transcript.setText("Transcript");
         buildTranscript(playbackArea);
         updatePlaybackLayout();
@@ -506,7 +514,7 @@ public final class MainActivity extends Activity {
         setControlIcon(button, icon, 20);
         button.setSelected(button.isEnabled() && mode != CueTimeline.Mode.OFF);
         button.setText(label + " · " + (mode == CueTimeline.Mode.OFF || !button.isEnabled()
-                ? "Tắt" : mode == CueTimeline.Mode.SOURCE ? "Gốc" : "Bản dịch"));
+                ? "Tắt" : mode == CueTimeline.Mode.SOURCE ? "Gốc" : "Dịch"));
         describeControl(button, description + ": " + (button.isEnabled() ? MODES.get(mode.ordinal())
                 : "chưa có transcript"));
     }
@@ -915,6 +923,22 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private void requestExit() {
+        if (!session.busy) {
+            finishAndRemoveTask();
+            return;
+        }
+        new PlayerAppearance.DialogBuilder(this, settings)
+                .setTitle("Thoát ứng dụng")
+                .setMessage("Tác vụ đang chạy. Bạn có muốn dừng và thoát?")
+                .setNegativeButton("Ở lại", null)
+                .setPositiveButton("Dừng và thoát", (dialog, which) -> {
+                    if (session.busy) work.cancelWork("Đã dừng tác vụ.");
+                    finishAndRemoveTask();
+                })
+                .show();
+    }
+
     private void pick(int request, String type) {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT)
                 .addCategory(Intent.CATEGORY_OPENABLE).setType(type);
@@ -1108,7 +1132,6 @@ public final class MainActivity extends Activity {
             return;
         }
         if (session.targetLanguage == null) chooseTranslationLanguage();
-        else toggleTranscript();
     }
 
     private void chooseTranslationLanguage() {
@@ -1837,7 +1860,8 @@ public final class MainActivity extends Activity {
         }
         playerView.setVisibility(hasVideo ? View.VISIBLE : View.INVISIBLE);
         shortcuts.setVisibility(hasVideo && visible ? View.VISIBLE : View.GONE);
-        actions.setVisibility(hasVideo && visible && !session.busy ? View.VISIBLE : View.GONE);
+        actions.setVisibility(hasVideo && visible && !session.busy && primary.getVisibility() == View.VISIBLE
+                ? View.VISIBLE : View.GONE);
         refreshStatusVisibility();
     }
 
@@ -1855,10 +1879,9 @@ public final class MainActivity extends Activity {
         empty.setVisibility(hasVideo ? View.GONE : View.VISIBLE);
         int missing = busy ? 0 : session.missingTranslations();
         primary.setEnabled(hasCues || !session.tracks.isEmpty());
-        setLeadingIcon(primary, missing == 0 && translated ? R.drawable.ic_control_transcript
-                : hasCues ? R.drawable.ic_control_translate : R.drawable.ic_control_generate);
+        primary.setVisibility(hasCues && translated && missing == 0 ? View.GONE : View.VISIBLE);
+        setLeadingIcon(primary, hasCues ? R.drawable.ic_control_translate : R.drawable.ic_control_generate);
         primary.setText(missing > 0 ? "Dịch lại " + missing + " đoạn"
-                : translated ? "Xem transcript"
                 : hasCues ? "Dịch sang " + languageName(settings.targetLanguage) : "Tạo transcript");
         cancel.setVisibility(busy ? View.VISIBLE : View.GONE);
         progress.setVisibility(busy ? View.VISIBLE : View.GONE);
