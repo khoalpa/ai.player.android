@@ -13,6 +13,13 @@ final class TelegramMessageReference {
         this.messageId = messageId;
     }
 
+    static long toTdlibMessageId(long publicPostId) {
+        // TDLib channel message IDs use a 20-bit fractional component.
+        if (publicPostId <= 0 || publicPostId > ((1L << 33) - 1))
+            throw new IllegalArgumentException("ID bài đăng vượt phạm vi TDLib int53");
+        return publicPostId << 20;
+    }
+
     static TelegramMessageReference fromUrl(String url) throws Exception {
         VideoSourceResolver.Source source = VideoSourceResolver.classify(url);
         if (source.kind != VideoSourceResolver.Kind.TELEGRAM_PUBLIC_POST)
