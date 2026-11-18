@@ -484,8 +484,16 @@ public final class MainActivity extends Activity {
         if (telegramSession != null && telegramSession.isNativeAvailable()) {
             new AlertDialog.Builder(this).setTitle("Tài khoản Telegram")
                     .setMessage("Trạng thái TDLib: " + telegramSession.authorizationState()
-                            + ". Hoàn tất bước xác thực đang hiển thị hoặc đăng xuất trước khi đổi tài khoản.")
-                    .setPositiveButton("Đóng", null).show();
+                            + ". Nếu cần đổi API ID/hash, hãy xóa cấu hình và khởi động lại ứng dụng.")
+                    .setNegativeButton("Đóng", null)
+                    .setPositiveButton("Xóa cấu hình API", (d, w) -> {
+                        new TelegramApiCredentialStore(this).clear();
+                        if (telegramSession instanceof TdJsonTelegramSessionClient)
+                            ((TdJsonTelegramSessionClient) telegramSession).closeTransport();
+                        telegramSession = null;
+                        lastTelegramState = null;
+                        showStatus("Đã xóa cấu hình API. Mở lại ứng dụng trước khi đăng nhập.");
+                    }).show();
             return;
         }
         TdJsonTelegramSessionClient probe = new TdJsonTelegramSessionClient(this, 0, "");
