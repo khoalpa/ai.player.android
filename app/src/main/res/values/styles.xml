@@ -5,7 +5,6 @@
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:statusBarColor">@color/ai_background</item>
         <item name="android:navigationBarColor">@color/ai_background</item>
-        <item name="android:windowLightNavigationBar">false</item>
         <item name="android:colorBackground">@color/ai_background</item>
         <item name="android:colorBackgroundFloating">@color/ai_surface</item>
         <item name="android:colorAccent">@color/ai_primary</item>
