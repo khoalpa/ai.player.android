@@ -21,12 +21,12 @@ final class UnavailableTelegramSessionClient implements TelegramSessionClient {
     @Override public void submitPhone(String phone, Completion callback) { callback.finished(ERROR); }
 
     @Override public void submitCode(char[] code, Completion callback) {
-        if (code != null) Arrays.fill(code, '\\0');
+        if (code != null) Arrays.fill(code, '\0');
         callback.finished(ERROR);
     }
 
     @Override public void submitTwoStepPassword(char[] password, Completion callback) {
-        if (password != null) Arrays.fill(password, '\\0');
+        if (password != null) Arrays.fill(password, '\0');
         callback.finished(ERROR);
     }
 
