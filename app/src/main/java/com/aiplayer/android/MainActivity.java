@@ -150,6 +150,42 @@ public final class MainActivity extends Activity {
                 updateControls("Hãy chọn lại video để cấp quyền đọc.");
             }
         });
+        handleSharedVideoIntent(getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleSharedVideoIntent(intent);
+    }
+
+    private void handleSharedVideoIntent(Intent intent) {
+        if (intent == null || !Intent.ACTION_SEND.equals(intent.getAction())
+                || intent.getType() == null || !intent.getType().startsWith("video/")) return;
+        Uri media = android.os.Build.VERSION.SDK_INT >= 33
+                ? intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri.class)
+                : intent.getParcelableExtra(Intent.EXTRA_STREAM);
+        if (media == null && intent.getClipData() != null && intent.getClipData().getItemCount() > 0)
+            media = intent.getClipData().getItemAt(0).getUri();
+        if (media == null) return;
+        final Uri shared = media;
+        ++openRequest; // Do not restore a previous playback session over the incoming video.
+        new AlertDialog.Builder(this).setTitle("Nhập video được chia sẻ")
+                .setMessage("Lưu một bản sao video vào Video đã lưu của AI Player? Không cần nhập tài khoản hoặc mật khẩu Telegram.")
+                .setNegativeButton("Hủy", null)
+                .setPositiveButton("Nhập video", (dialog, which) -> {
+                    showStatus("Đang nhập video được chia sẻ...");
+                    new SharedVideoImporter(this).importVideo(shared, (file, error) -> {
+                        if (destroyed) return;
+                        if (error != null) {
+                            showVideoDownloadError(error.getMessage());
+                            return;
+                        }
+                        showStatus("Đã nhập video");
+                        openSavedVideo(file);
+                    });
+                }).show();
     }
 
     private LinearLayout buildContent() {
@@ -350,43 +386,92 @@ public final class MainActivity extends Activity {
         EditText address = new EditText(this);
         address.setSingleLine(true);
         address.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI);
-        address.setHint("https://example.com/video.mp4");
+        address.setHint("https://example.com/video.mp4 hoặc https://t.me/channel/123");
         new AlertDialog.Builder(this).setTitle("Tải video từ URL")
                 .setView(address).setNegativeButton("Hủy", null)
                 .setPositiveButton("Tải", (dialog, which) -> {
-                    String url = address.getText().toString().trim();
-                    AlertDialog downloadDialog = new AlertDialog.Builder(this)
-                            .setTitle("Đang tải video")
-                            .setMessage("Đang kết nối...")
-                            .setNegativeButton("Hủy", null)
-                            .create();
-                    SavedVideoStore.Download[] active = new SavedVideoStore.Download[1];
-                    active[0] = videoStore.download(url, (bytes, total) -> {
-                        if (destroyed || !downloadDialog.isShowing()) return;
-                        String size = android.text.format.Formatter.formatShortFileSize(this, bytes);
-                        String detail = total > 0
-                                ? (bytes * 100 / total) + "% • " + size
-                                : size;
-                        downloadDialog.setMessage("Đã tải: " + detail);
-                    }, (file, error) -> {
-                        downloadDialog.dismiss();
-                        if (destroyed || active[0].isCancelled()) return;
-                        if (error != null) {
-                            new AlertDialog.Builder(this).setTitle("Không thể tải video")
-                                    .setMessage(error.getMessage()).setPositiveButton("Đóng", null).show();
-                            return;
+                    try {
+                        VideoSourceResolver.Source source =
+                                VideoSourceResolver.classify(address.getText().toString());
+                        if (source.kind == VideoSourceResolver.Kind.DIRECT_FILE) {
+                            startVideoDownload(source.url.toExternalForm());
+                        } else if (source.kind == VideoSourceResolver.Kind.TELEGRAM_PUBLIC_POST) {
+                            resolveTelegramPost(source);
+                        } else {
+                            showVideoDownloadError("Trang web này chưa hỗ trợ trích xuất video. Hãy dùng URL trực tiếp.");
                         }
-                        showStatus("Đã lưu video");
-                        openSavedVideo(file);
-                    });
-                    downloadDialog.setOnShowListener(d ->
-                            downloadDialog.getButton(AlertDialog.BUTTON_NEGATIVE)
-                                    .setOnClickListener(v -> {
-                                        active[0].cancel();
-                                        downloadDialog.dismiss();
-                                    }));
-                    downloadDialog.show();
+                    } catch (Exception error) {
+                        showVideoDownloadError(error.getMessage());
+                    }
                 }).show();
+    }
+
+    private void resolveTelegramPost(VideoSourceResolver.Source source) {
+        AlertDialog resolving = new AlertDialog.Builder(this)
+                .setTitle("Telegram công khai")
+                .setMessage("Đang tìm video từ bài đăng công khai...")
+                .setNegativeButton("Đóng", null).create();
+        resolving.show();
+        new TelegramPublicResolver().resolve(source, (media, error) -> {
+            if (destroyed || !resolving.isShowing()) return;
+            resolving.dismiss();
+            if (error != null) {
+                if (!destroyed) new AlertDialog.Builder(this)
+                        .setTitle("Không thể tải video Telegram")
+                        .setMessage("Trang nhúng không cung cấp tệp video trực tiếp. Bạn có thể mở bài đăng bằng tài khoản Telegram đã đăng nhập; nếu Telegram cho phép, hãy chia sẻ tệp video tới AI Player hoặc lưu video rồi chọn tệp trên thiết bị.\n" + error.getMessage())
+                        .setNegativeButton("Đóng", null)
+                        .setPositiveButton("Mở trong Telegram", (d, w) -> openTelegramPost(source.url))
+                        .show();
+                return;
+            }
+            startVideoDownload(media);
+        });
+    }
+
+    private void openTelegramPost(java.net.URL post) {
+        try {
+            Intent view = new Intent(Intent.ACTION_VIEW, Uri.parse(post.toExternalForm()));
+            view.addCategory(Intent.CATEGORY_BROWSABLE);
+            startActivity(view);
+        } catch (android.content.ActivityNotFoundException exception) {
+            showVideoDownloadError("Không có ứng dụng mở được liên kết Telegram");
+        }
+    }
+    private void showVideoDownloadError(String message) {
+        new AlertDialog.Builder(this).setTitle("Không thể tải video")
+                .setMessage(message).setPositiveButton("Đóng", null).show();
+    }
+
+    private void startVideoDownload(String url) {
+        AlertDialog downloadDialog = new AlertDialog.Builder(this)
+                .setTitle("Đang tải video")
+                .setMessage("Đang kết nối...")
+                .setNegativeButton("Hủy", null).create();
+        SavedVideoStore.Download[] active = new SavedVideoStore.Download[1];
+        active[0] = videoStore.download(url, (bytes, total) -> {
+            if (destroyed || !downloadDialog.isShowing()) return;
+            String size = android.text.format.Formatter.formatShortFileSize(this, bytes);
+            String detail = total > 0
+                    ? (bytes * 100 / total) + "% • " + size
+                    : size;
+            downloadDialog.setMessage("Đã tải: " + detail);
+        }, (file, error) -> {
+            downloadDialog.dismiss();
+            if (destroyed || active[0].isCancelled()) return;
+            if (error != null) {
+                showVideoDownloadError(error.getMessage());
+                return;
+            }
+            showStatus("Đã lưu video");
+            openSavedVideo(file);
+        });
+        downloadDialog.setOnShowListener(d ->
+                downloadDialog.getButton(AlertDialog.BUTTON_NEGATIVE)
+                        .setOnClickListener(v -> {
+                            active[0].cancel();
+                            downloadDialog.dismiss();
+                        }));
+        downloadDialog.show();
     }
 
     private void showSavedVideos() {
