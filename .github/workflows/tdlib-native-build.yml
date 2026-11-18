@@ -1,0 +1,66 @@
+name: Verify official TDLib JSONJava native Android build
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: tdlib-native-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  native-jsonjava:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check official pinned TDLib source and build JSONJava
+        run: bash scripts/build-tdlib-jsonjava.sh
+      - name: Verify arm64-v8a and generated Java JNI bindings
+        run: |
+          test -s app/src/main/jniLibs/arm64-v8a/libtdjsonjava.so
+          find app/src/main/jniLibs -type f -name 'libtdjsonjava.so' -print -exec sha256sum {} \;
+      - name: Check 16 KB Android ELF page alignment
+        run: |
+          python3 - <<'PY'
+          import glob
+          import subprocess
+          libraries = glob.glob('app/src/main/jniLibs/*/libtdjsonjava.so')
+          if not libraries:
+              raise SystemExit('No native TDLib libraries to inspect')
+          for path in libraries:
+              output = subprocess.check_output(['readelf', '-lW', path], text=True)
+              load_alignments = [int(line.split()[-1], 16) for line in output.splitlines()
+                                 if line.lstrip().startswith('LOAD ')]
+              if not load_alignments or any(value < 16384 for value in load_alignments):
+                  raise SystemExit(f'{path}: not 16 KB ELF page aligned: {load_alignments}')
+              print(f'{path}: verified 16 KB ELF alignment')
+          PY
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Configure Android SDK
+        run: |
+          echo "ANDROID_HOME=${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}" >> "$GITHUB_ENV"
+          "${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-35" "build-tools;35.0.0"
+      - name: Build APK with verified TDLib native candidate
+        run: |
+          chmod +x ./gradlew
+          ./gradlew --no-daemon :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
+          unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -F 'lib/arm64-v8a/libtdjsonjava.so'
+      - name: Upload TDLib-enabled Android debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-player-tdlib-native-debug-apk
+          if-no-files-found: error
+          retention-days: 14
+          path: app/build/outputs/apk/debug/app-debug.apk
+      - name: Upload audited TDLib Android native candidates
+        uses: actions/upload-artifact@v4
+        with:
+          name: tdlib-jsonjava-native-candidate
+          if-no-files-found: error
+          retention-days: 14
+          path: app/src/main/jniLibs/**/libtdjsonjava.so
