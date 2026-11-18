@@ -51,16 +51,30 @@ final class VideoSourceResolver {
      * Never follow arbitrary page links or attempt to use cookies/authenticated media.
      */
     static String extractPublicMediaUrl(String html) throws Exception {
-        Pattern element = Pattern.compile("<(?:video|source)\\b[^>]*>", Pattern.CASE_INSENSITIVE);
-        Matcher tags = element.matcher(html);
-        Pattern src = Pattern.compile("\\bsrc\\s*=\\s*[\"']([^\"']+)[\"']", Pattern.CASE_INSENSITIVE);
-        while (tags.find()) {
-            Matcher attr = src.matcher(tags.group());
-            if (!attr.find()) continue;
-            String candidate = attr.group(1).replace("&amp;", "&");
-            URL resolved = VideoUrlPolicy.requireHttps(candidate);
-            VideoUrlPolicy.extension(resolved);
-            return resolved.toExternalForm();
+        // Telegram's public widget can put the video src on a <div>, not a <video> tag.
+        // Restrict extraction to explicit media elements instead of arbitrary links.
+        Pattern tags = Pattern.compile("<(?:video|source|div)\\\\b[^>]*>", Pattern.CASE_INSENSITIVE);
+        Pattern src = Pattern.compile("\\\\bsrc\\\\s*=\\\\s*[\\\"']([^\\\"']+)[\\\"']", Pattern.CASE_INSENSITIVE);
+        Pattern klass = Pattern.compile("\\\\bclass\\\\s*=\\\\s*[\\\"']([^\\\"']+)[\\\"']", Pattern.CASE_INSENSITIVE);
+        Matcher elements = tags.matcher(html);
+        while (elements.find()) {
+            String tag = elements.group();
+            if (tag.regionMatches(true, 1, "div", 0, 3)) {
+                Matcher classes = klass.matcher(tag);
+                if (!classes.find() ||
+                        !java.util.Arrays.asList(classes.group(1).split("\\\\s+"))
+                                .contains("tgme_widget_message_video")) continue;
+            }
+            Matcher attribute = src.matcher(tag);
+            if (!attribute.find()) continue;
+            String candidate = attribute.group(1).replace("&amp;", "&");
+            try {
+                URL url = VideoUrlPolicy.requireHttps(candidate);
+                VideoUrlPolicy.extension(url);
+                return url.toExternalForm();
+            } catch (IllegalArgumentException | java.net.MalformedURLException ignored) {
+                // An image or thumbnail is not a playable video.
+            }
         }
         throw new IllegalArgumentException("Bài đăng không cung cấp video công khai trực tiếp");
     }
