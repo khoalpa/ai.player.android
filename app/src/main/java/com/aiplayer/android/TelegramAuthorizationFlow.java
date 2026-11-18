@@ -12,7 +12,7 @@ final class TelegramAuthorizationFlow {
         READY, LOGGING_OUT, CLOSED, ERROR
     }
 
-    private State current = State.UNAVAILABLE;
+    private volatile State current = State.UNAVAILABLE;
 
     State state() { return current; }
 

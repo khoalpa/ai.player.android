@@ -4,7 +4,6 @@ import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Build;
-import android.util.Log;
 import org.drinkless.tdlib.JsonClient;
 import org.json.JSONObject;
 
@@ -32,6 +31,7 @@ final class TdJsonTelegramSessionClient implements TelegramSessionClient {
     private volatile boolean running;
     private volatile int clientId;
     private volatile Listener stateListener;
+    private Completion logoutCompletion;
 
     TdJsonTelegramSessionClient(Context context, int apiId, String apiHash) {
         this.context = context.getApplicationContext();
@@ -128,12 +128,17 @@ final class TdJsonTelegramSessionClient implements TelegramSessionClient {
             flow.onError();
             Listener listener = stateListener;
             if (listener != null) main.post(() -> listener.authorizationChanged(flow.state()));
+            main.post(() -> finishLogout("Mất kết nối với TDLib trước khi xác nhận đăng xuất"));
         }
     }
 
     private void handleAuthorizationState(String kind) {
         flow.onTdlibAuthorizationState(kind);
         if ("authorizationStateWaitTdlibParameters".equals(kind)) configureTdlib();
+        if ("authorizationStateClosed".equals(kind)) {
+            running = false;
+            main.post(() -> finishLogout(null));
+        }
         Listener listener = stateListener;
         if (listener != null) main.post(() -> listener.authorizationChanged(flow.state()));
     }
@@ -195,7 +200,7 @@ final class TdJsonTelegramSessionClient implements TelegramSessionClient {
     private void authRequest(JSONObject request, Completion callback) {
         send(request, response -> {
             if ("error".equals(response.optString("@type")))
-                callback.finished(response.optString("message", "Telegram từ chối yêu cầu"));
+                callback.finished(messageError(response, "Telegram từ chối yêu cầu"));
             else if (!"ok".equals(response.optString("@type")))
                 callback.finished("Không nhận được xác nhận từ TDLib");
             else callback.finished(null);
@@ -277,8 +282,31 @@ final class TdJsonTelegramSessionClient implements TelegramSessionClient {
             callback.finished(null, messageError(message, "Không truy cập được bài đăng"));
             return;
         }
-        if (!message.optBoolean("can_be_saved", true)) {
-            callback.finished(null, "Bài đăng hạn chế lưu hoặc xuất video");
+        if (message.has("can_be_saved")) {
+            if (message.optBoolean("can_be_saved", false)) downloadSaveableMessage(message, callback);
+            else callback.finished(null, "Bài đăng hạn chế lưu hoặc xuất video");
+            return;
+        }
+        try {
+            JSONObject request = request("getMessageProperties");
+            request.put("chat_id", message.getLong("chat_id"));
+            request.put("message_id", message.getLong("id"));
+            send(request, properties -> {
+                if ("messageProperties".equals(properties.optString("@type"))
+                        && properties.optBoolean("can_be_saved", false)) {
+                    downloadSaveableMessage(message, callback);
+                } else {
+                    callback.finished(null, "Không xác nhận được quyền lưu video của bài đăng");
+                }
+            });
+        } catch (Exception error) {
+            callback.finished(null, "Không xác nhận được quyền lưu video của bài đăng");
+        }
+    }
+
+    private void downloadSaveableMessage(JSONObject message, MessageVideoResult callback) {
+        if (!running || flow.state() != TelegramAuthorizationFlow.State.READY || logoutCompletion != null) {
+            callback.finished(null, "Phiên Telegram không còn sẵn sàng");
             return;
         }
         JSONObject content = message.optJSONObject("content");
@@ -347,16 +375,21 @@ final class TdJsonTelegramSessionClient implements TelegramSessionClient {
     }
 
     @Override public void logoutAndClearSession(Completion callback) {
-        if (!running || !nativeLoaded) {
-            callback.finished(null);
+        if (!running || !nativeLoaded || logoutCompletion != null) {
+            callback.finished("Không thể xác nhận đăng xuất ở trạng thái hiện tại");
             return;
         }
-        try {
-            send(request("logOut"), response -> {
-                if ("error".equals(response.optString("@type")))
-                    callback.finished(messageError(response, "Đăng xuất thất bại"));
-                else callback.finished(null);
-            });
-        } catch (Exception error) { callback.finished("Không thể gửi yêu cầu đăng xuất"); }
+        logoutCompletion = callback;
+        send(request("logOut"), response -> {
+            if (!"ok".equals(response.optString("@type"))) {
+                finishLogout(messageError(response, "Đăng xuất thất bại"));
+            }
+        });
+    }
+
+    private void finishLogout(String error) {
+        Completion completion = logoutCompletion;
+        logoutCompletion = null;
+        if (completion != null) completion.finished(error);
     }
 }

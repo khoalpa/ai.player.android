@@ -476,7 +476,9 @@ public final class MainActivity extends Activity {
                                 if (error != null) showVideoDownloadError(error);
                                 else {
                                     new TelegramApiCredentialStore(this).clear();
-                                    showStatus("Đã yêu cầu đăng xuất Telegram; cấu hình API đã xóa");
+                                      telegramSession = null;
+                                      lastTelegramState = null;
+                                      if (!destroyed) showStatus("Đã đăng xuất Telegram; cấu hình API đã xóa");
                                 }
                             })).show();
             return;

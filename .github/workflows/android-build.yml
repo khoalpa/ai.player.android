@@ -10,7 +10,7 @@ on:
 jobs:
   android-checks:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 300
     permissions:
       contents: read
     steps:
@@ -27,8 +27,30 @@ jobs:
           "${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-35" "build-tools;35.0.0"
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
+      - name: Build pinned TDLib JSONJava and verify JNI bindings
+        run: bash scripts/build-tdlib-jsonjava.sh
+      - name: Check 16 KB Android ELF page alignment
+        run: |
+          python3 - <<'PY'
+          import glob
+          import subprocess
+          libraries = glob.glob('app/src/main/jniLibs/*/libtdjsonjava.so')
+          if not libraries:
+              raise SystemExit('No native TDLib libraries to inspect')
+          for path in libraries:
+              output = subprocess.check_output(['readelf', '-lW', path], text=True)
+              load_alignments = [int(line.split()[-1], 16) for line in output.splitlines()
+                                 if line.lstrip().startswith('LOAD ')]
+              if not load_alignments or any(value < 16384 for value in load_alignments):
+                  raise SystemExit(f'{path}: not 16 KB ELF page aligned: {load_alignments}')
+              print(f'{path}: verified 16 KB ELF alignment')
+          PY
       - name: Build, unit tests and lint
         run: ./gradlew --no-daemon :app:assembleDebug :app:testDebugUnitTest :app:lintDebug --stacktrace
+      - name: Verify TDLib is packaged in the standard APK
+        run: |
+          unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -F 'lib/arm64-v8a/libtdjsonjava.so'
+          "${ANDROID_HOME}/build-tools/35.0.0/zipalign" -c -P 16 -v 4 app/build/outputs/apk/debug/app-debug.apk
       - name: Upload reports
         if: always()
         uses: actions/upload-artifact@v4
