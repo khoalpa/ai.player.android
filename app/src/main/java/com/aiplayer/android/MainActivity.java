@@ -150,6 +150,42 @@ public final class MainActivity extends Activity {
                 updateControls("Hãy chọn lại video để cấp quyền đọc.");
             }
         });
+        handleSharedVideoIntent(getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleSharedVideoIntent(intent);
+    }
+
+    private void handleSharedVideoIntent(Intent intent) {
+        if (intent == null || !Intent.ACTION_SEND.equals(intent.getAction())
+                || intent.getType() == null || !intent.getType().startsWith("video/")) return;
+        Uri media = android.os.Build.VERSION.SDK_INT >= 33
+                ? intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri.class)
+                : intent.getParcelableExtra(Intent.EXTRA_STREAM);
+        if (media == null && intent.getClipData() != null && intent.getClipData().getItemCount() > 0)
+            media = intent.getClipData().getItemAt(0).getUri();
+        if (media == null) return;
+        final Uri shared = media;
+        ++openRequest; // Do not restore a previous playback session over the incoming video.
+        new AlertDialog.Builder(this).setTitle("Nhập video được chia sẻ")
+                .setMessage("Lưu một bản sao video vào Video đã lưu của AI Player? Không cần nhập tài khoản hoặc mật khẩu Telegram.")
+                .setNegativeButton("Hủy", null)
+                .setPositiveButton("Nhập video", (dialog, which) -> {
+                    showStatus("Đang nhập video được chia sẻ...");
+                    new SharedVideoImporter(this).importVideo(shared, (file, error) -> {
+                        if (destroyed) return;
+                        if (error != null) {
+                            showVideoDownloadError(error.getMessage());
+                            return;
+                        }
+                        showStatus("Đã nhập video");
+                        openSavedVideo(file);
+                    });
+                }).show();
     }
 
     private LinearLayout buildContent() {
@@ -380,15 +416,27 @@ public final class MainActivity extends Activity {
             if (destroyed || !resolving.isShowing()) return;
             resolving.dismiss();
             if (error != null) {
-                if (!destroyed) showVideoDownloadError(
-                        "Không lấy được URL video từ bản nhúng công khai của Telegram. Điều này không có nghĩa bài đăng không có video. Hãy kiểm tra bài đăng trong Telegram hoặc dùng tệp đã lưu trên thiết bị."
-                                + "\n" + error.getMessage());
+                if (!destroyed) new AlertDialog.Builder(this)
+                        .setTitle("Không thể tải video Telegram")
+                        .setMessage("Trang nhúng không cung cấp tệp video trực tiếp. Bạn có thể mở bài đăng bằng tài khoản Telegram đã đăng nhập; nếu Telegram cho phép, hãy chia sẻ tệp video tới AI Player hoặc lưu video rồi chọn tệp trên thiết bị.\\n" + error.getMessage())
+                        .setNegativeButton("Đóng", null)
+                        .setPositiveButton("Mở trong Telegram", (d, w) -> openTelegramPost(source.url))
+                        .show();
                 return;
             }
             startVideoDownload(media);
         });
     }
 
+    private void openTelegramPost(java.net.URL post) {
+        try {
+            Intent view = new Intent(Intent.ACTION_VIEW, Uri.parse(post.toExternalForm()));
+            view.addCategory(Intent.CATEGORY_BROWSABLE);
+            startActivity(view);
+        } catch (android.content.ActivityNotFoundException exception) {
+            showVideoDownloadError("Không có ứng dụng mở được liên kết Telegram");
+        }
+    }
     private void showVideoDownloadError(String message) {
         new AlertDialog.Builder(this).setTitle("Không thể tải video")
                 .setMessage(message).setPositiveButton("Đóng", null).show();
