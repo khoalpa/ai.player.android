@@ -46,11 +46,17 @@ jobs:
               print(f'{path}: verified 16 KB ELF alignment')
           PY
       - name: Build, unit tests and lint
-        run: ./gradlew --no-daemon :app:assembleDebug :app:testDebugUnitTest :app:lintDebug --stacktrace
+        run: >-
+          ./gradlew --no-daemon --stacktrace
+          :app:assembleStandaloneDebug :app:testStandaloneDebugUnitTest :app:lintStandaloneDebug
+          :app:assemblePlayDebug :app:testPlayDebugUnitTest :app:lintPlayDebug
       - name: Verify TDLib is packaged in the standard APK
         run: |
-          unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -F 'lib/arm64-v8a/libtdjsonjava.so'
-          "${ANDROID_HOME}/build-tools/35.0.0/zipalign" -c -P 16 -v 4 app/build/outputs/apk/debug/app-debug.apk
+          for flavor in standalone play; do
+            apk="app/build/outputs/apk/$flavor/debug/app-$flavor-debug.apk"
+            unzip -l "$apk" | grep -F 'lib/arm64-v8a/libtdjsonjava.so'
+            "${ANDROID_HOME}/build-tools/35.0.0/zipalign" -c -P 16 -v 4 "$apk"
+          done
       - name: Upload reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -69,4 +75,4 @@ jobs:
           name: ai-player-debug-apk
           if-no-files-found: error
           retention-days: 14
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: app/build/outputs/apk/*/debug/app-*-debug.apk

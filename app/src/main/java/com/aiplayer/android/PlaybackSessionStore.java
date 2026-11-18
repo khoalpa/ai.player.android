@@ -25,6 +25,7 @@ import java.util.concurrent.Future;
 import java.util.function.Consumer;
 
 final class PlaybackSessionStore {
+    private static final int RECENT_LIMIT = 3;
     private static final ExecutorService IO = Executors.newSingleThreadExecutor();
     private static final Object FILE_LOCK = new Object();
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -47,6 +48,16 @@ final class PlaybackSessionStore {
             this.source = source;
             this.target = target;
             this.cues = cues;
+        }
+    }
+
+    static final class RecentVideo {
+        final Uri uri;
+        final String name;
+
+        RecentVideo(Uri uri, String name) {
+            this.uri = uri;
+            this.name = name;
         }
     }
 
@@ -79,13 +90,21 @@ final class PlaybackSessionStore {
         main.removeCallbacksAndMessages(null);
     }
 
-    void load(Uri requested, Consumer<Snapshot> callback) {
+    void load(Uri uri, Consumer<Snapshot> callback) {
         cancelLoad();
         ReadCancellation request = new ReadCancellation();
         cancellation = request;
+        Future<?> writes = IO.submit(() -> {});
         pendingLoad = reads.submit(() -> {
-            String recent = preferences.getString("video", null);
-            Uri uri = requested != null ? requested : (recent == null ? null : Uri.parse(recent));
+            try {
+                writes.get();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return;
+            } catch (java.util.concurrent.ExecutionException ignored) {
+                // Use the last available snapshot.
+            }
+            if (request.isCancelled()) return;
             Snapshot restored = null;
             if (uri != null) {
                 String identity = TranscriptCache.videoIdentity(context, uri, request);
@@ -94,10 +113,7 @@ final class PlaybackSessionStore {
                 restored = identity != null
                         ? readSnapshot(uri, identity, saved)
                         : new Snapshot(uri, identity, 0, null, null, new ArrayList<>());
-                try (Cursor cursor = context.getContentResolver().query(uri,
-                        new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null, request.signal)) {
-                    if (cursor != null && cursor.moveToFirst() && !cursor.isNull(0)) restored.name = cursor.getString(0);
-                } catch (RuntimeException ignored) { }
+                restored.name = displayName(context, uri, request.signal);
             }
             Snapshot result = restored;
             main.post(() -> { if (!request.isCancelled()) callback.accept(result); });
@@ -150,10 +166,7 @@ final class PlaybackSessionStore {
     }
 
     private void save(Uri uri, String identity, long position, VideoSession session, boolean updatePosition) {
-        if (identity == null) {
-            IO.execute(() -> preferences.edit().clear().putString("video", uri.toString()).apply());
-            return;
-        }
+        if (identity == null) return;
         List<TranscriptCue> snapshot = new ArrayList<>();
         for (TranscriptCue cue : session.completedCues()) {
             TranscriptCue copy = new TranscriptCue(cue.startMs, cue.endMs, cue.sourceText);
@@ -187,12 +200,14 @@ final class PlaybackSessionStore {
             output = file.startWrite();
             output.write(data.toString().getBytes(StandardCharsets.UTF_8));
             file.finishWrite(output);
-            SharedPreferences.Editor edit = videoPreferences(uri).edit().putString("identity", identity)
+            SharedPreferences video = videoPreferences(uri);
+            SharedPreferences.Editor edit = video.edit().putString("identity", identity)
                     .putString("source", source).putString("target", target)
                     .remove("cues");
-            if (updatePosition) edit.putLong("position", position);
+            if (updatePosition || !identity.equals(video.getString("identity", null))) {
+                edit.putLong("position", position);
+            }
             edit.commit();
-            preferences.edit().clear().putString("video", uri.toString()).apply();
         } catch (Exception ex) {
             if (output != null) file.failWrite(output);
             Log.w("PlaybackSessionStore", "Could not save transcript", ex);
@@ -208,10 +223,81 @@ final class PlaybackSessionStore {
         });
     }
 
-    void clearRecent() {
-        IO.execute(() -> {
-            preferences.edit().clear().apply();
-        });
+    long savedPosition(Uri uri) {
+        return videoPreferences(uri).getLong("position", 0);
+    }
+
+    List<RecentVideo> recentVideos() {
+        List<RecentVideo> recent = new ArrayList<>();
+        String stored = preferences.getString("recent_videos", null);
+        if (stored == null) {
+            String legacy = preferences.getString("video", null);
+            if (legacy != null) {
+                Uri uri = Uri.parse(legacy);
+                recent.add(new RecentVideo(uri, null));
+            }
+            return recent;
+        }
+        try {
+            JSONArray array = new JSONArray(stored);
+            for (int index = 0; index < array.length() && recent.size() < RECENT_LIMIT; index++) {
+                JSONObject item = array.optJSONObject(index);
+                if (item == null || item.optString("uri").isEmpty()) continue;
+                Uri uri = Uri.parse(item.optString("uri"));
+                recent.add(new RecentVideo(uri, item.optString("name", null)));
+            }
+        } catch (org.json.JSONException ex) {
+            Log.w("PlaybackSessionStore", "Could not read recent videos", ex);
+        }
+        return recent;
+    }
+
+    static String displayName(Context context, Uri uri, android.os.CancellationSignal cancellation) {
+        try (Cursor cursor = context.getContentResolver().query(uri,
+                new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null, cancellation)) {
+            if (cursor != null && cursor.moveToFirst() && !cursor.isNull(0)) return cursor.getString(0);
+        } catch (RuntimeException ignored) {
+            // Some providers do not expose a display name.
+        }
+        return fallbackName(uri);
+    }
+
+    static String fallbackName(Uri uri) {
+        String name = uri.getLastPathSegment();
+        if (name == null || name.isEmpty()) return "Video";
+        return name.substring(name.lastIndexOf('/') + 1);
+    }
+
+    void recordOpened(Uri uri, String name) {
+        List<RecentVideo> recent = recentVideos();
+        recent.removeIf(video -> uri.equals(video.uri));
+        recent.add(0, new RecentVideo(uri, name));
+        RecentVideo evicted = recent.size() > RECENT_LIMIT ? recent.remove(RECENT_LIMIT) : null;
+        writeRecent(recent);
+        if (evicted != null && "content".equals(evicted.uri.getScheme())) {
+            try {
+                context.getContentResolver().releasePersistableUriPermission(
+                        evicted.uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } catch (SecurityException ignored) {
+                // The provider may already have revoked the grant.
+            }
+        }
+    }
+
+    void removeRecent(Uri uri) {
+        List<RecentVideo> recent = recentVideos();
+        if (recent.removeIf(video -> uri.equals(video.uri))) writeRecent(recent);
+    }
+
+    private void writeRecent(List<RecentVideo> recent) {
+        try {
+            JSONArray array = new JSONArray();
+            for (RecentVideo video : recent) {
+                array.put(new JSONObject().put("uri", video.uri.toString()).put("name", video.name));
+            }
+            preferences.edit().remove("video").putString("recent_videos", array.toString()).apply();
+        } catch (org.json.JSONException ex) {
+            Log.w("PlaybackSessionStore", "Could not save recent videos", ex);
+        }
     }
 }
-

@@ -11,5 +11,21 @@
         <item name="android:windowBackground">@color/ai_background</item>
         <item name="android:textColorPrimary">@color/ai_text</item>
         <item name="android:textColorSecondary">@color/ai_muted</item>
+        <item name="playerSelection">#16324A</item>
+        <item name="playerAccentText">#000000</item>
+    </style>
+    <style name="AppThemeLight" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:statusBarColor">#F5F6F8</item>
+        <item name="android:navigationBarColor">#172033</item>
+        <item name="android:colorBackground">#F5F6F8</item>
+        <item name="android:colorBackgroundFloating">#FFFFFF</item>
+        <item name="android:colorAccent">#2459C4</item>
+        <item name="android:windowBackground">#F5F6F8</item>
+        <item name="android:textColorPrimary">#172033</item>
+        <item name="android:textColorSecondary">#536176</item>
+        <item name="playerSelection">#E6EDFF</item>
+        <item name="playerAccentText">#FFFFFF</item>
     </style>
 </resources>

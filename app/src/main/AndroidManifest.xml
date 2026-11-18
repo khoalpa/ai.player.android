@@ -25,7 +25,7 @@
             android:foregroundServiceType="dataSync|mediaProcessing" />
         <activity
             android:name=".MainActivity"
-            android:configChanges="keyboardHidden|orientation|screenSize"
+            android:configChanges="keyboardHidden|orientation|screenSize|uiMode"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

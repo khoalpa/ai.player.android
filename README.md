@@ -18,10 +18,11 @@ Luồng hiện tại nhận video cục bộ và phụ đề SRT/VTT. Ứng dụ
 Cần Android SDK 35, JDK tương thích với cấu hình Gradle của repo và thiết bị hoặc máy ảo Android API 26 trở lên.
 
 ```powershell
-.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
+.\gradlew.bat :app:assembleStandaloneDebug :app:testStandaloneDebugUnitTest :app:lintStandaloneDebug
+.\gradlew.bat :app:assemblePlayDebug :app:testPlayDebugUnitTest :app:lintPlayDebug
 ```
 
-APK debug nằm trong `app/build/outputs/apk/debug/`. Trên thiết bị, kiểm tra video có một, nhiều hoặc không có track âm thanh, nhập SRT/VTT, tải model lần đầu, dịch offline sau khi tải model, đổi video khi tác vụ đang chạy và tua/tạm dừng khi giọng đọc đang phát.
+APK debug nằm trong `app/build/outputs/apk/<flavor>/debug/`. Trên thiết bị, kiểm tra video có một, nhiều hoặc không có track âm thanh, nhập SRT/VTT, tải model lần đầu, dịch offline sau khi tải model, đổi video khi tác vụ đang chạy và tua/tạm dừng khi giọng đọc đang phát.
 
 ## Mã nguồn
 

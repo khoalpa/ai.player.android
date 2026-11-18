@@ -1,6 +1,9 @@
 package com.aiplayer.android;
 
 import android.content.Context;
+import android.content.SharedPreferences;
+import android.media.MediaExtractor;
+import android.media.MediaFormat;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -33,10 +36,62 @@ final class SavedVideoStore {
     }
 
     private final Context context;
+    private final SharedPreferences metadata;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
 
-    SavedVideoStore(Context context) { this.context = context.getApplicationContext(); }
+    SavedVideoStore(Context context) {
+        this.context = context.getApplicationContext();
+        metadata = this.context.getSharedPreferences("saved_video_metadata", Context.MODE_PRIVATE);
+    }
+
+    static String telegramKey(VideoSourceResolver.Source source) {
+        return source.kind == VideoSourceResolver.Kind.TELEGRAM_PUBLIC_POST
+                ? source.channel.toLowerCase(java.util.Locale.ROOT) + "/" + source.postId : null;
+    }
+
+    File findBySource(String key) {
+        if (key == null) return null;
+        for (File file : list()) {
+            if (key.equals(metadata.getString(file.getName() + ".key", null))) return file;
+        }
+        return null;
+    }
+
+    void remember(File file, String source, String key, String title) {
+        String filename = file.getName();
+        metadata.edit().putString(filename + ".source", source)
+                .putString(filename + ".key", key)
+                .putString(filename + ".title", cleanTitle(title))
+                .apply();
+    }
+
+    void forget(File file) {
+        String name = file.getName();
+        metadata.edit().remove(name + ".source").remove(name + ".key").remove(name + ".title").apply();
+    }
+
+    String displayName(File file) {
+        String title = metadata.getString(file.getName() + ".title", null);
+        return title == null || title.isEmpty() ? file.getName() : title;
+    }
+
+    String sourceLabel(File file) {
+        String name = file.getName();
+        String previous = name.startsWith("telegram_") ? "Telegram"
+                : name.startsWith("video_") ? "URL" : name.startsWith("shared_") ? "Chia sẻ" : "";
+        return metadata.getString(name + ".source", previous);
+    }
+
+    static String nameFromUrl(String url) {
+        return url == null ? null : android.net.Uri.parse(url).getLastPathSegment();
+    }
+
+    private static String cleanTitle(String title) {
+        if (title == null) return null;
+        String clean = title.replaceAll("[\\p{Cntrl}\\p{Cf}]", " ").trim();
+        return clean.substring(0, Math.min(clean.length(), 180));
+    }
 
     File[] list() {
         File[] files = directory().listFiles(file -> file.isFile() && !file.getName().endsWith(".part"));
@@ -58,13 +113,7 @@ final class SavedVideoStore {
             HttpURLConnection connection = null;
             try {
                 URL url = VideoUrlPolicy.requireHttps(address);
-                String extension = VideoUrlPolicy.extension(url);
-                // Timestamp plus a random suffix prevents name collisions.
-                String name = "video_" + System.currentTimeMillis() + "_" +
-                        java.util.UUID.randomUUID().toString().substring(0, 8) + extension;
-                File dir = directory();
-                File destination = new File(dir, name);
-                temp = new File(dir, name + ".part");
+                URL originalUrl = url;
                 for (int redirects = 0; ; redirects++) {
                     if (task.isCancelled()) throw new IOException("Đã hủy tải video");
                     connection = (HttpURLConnection) url.openConnection();
@@ -85,6 +134,12 @@ final class SavedVideoStore {
                     if (status != HttpURLConnection.HTTP_OK) throw new IOException("HTTP " + status);
                     break;
                 }
+                String extension = VideoUrlPolicy.downloadExtension(url, originalUrl, connection.getContentType());
+                String name = "video_" + System.currentTimeMillis() + "_" +
+                        java.util.UUID.randomUUID().toString().substring(0, 8) + extension;
+                File dir = directory();
+                File destination = new File(dir, name);
+                temp = new File(dir, name + ".part");
                 long length = connection.getContentLengthLong();
                 if (length > VideoUrlPolicy.MAX_BYTES) throw new IOException("Video vượt giới hạn 2 GB");
                 if (length > 0 && dir.getUsableSpace() < length + 16L * 1024 * 1024)
@@ -111,7 +166,10 @@ final class SavedVideoStore {
                     output.getFD().sync();
                 }
                 if (task.isCancelled()) throw new IOException("Đã hủy tải video");
-                if (bytes == 0 || !temp.renameTo(destination)) throw new IOException("Không thể lưu video");
+                if (length >= 0 && bytes != length) throw new IOException("Tệp tải về chưa đầy đủ");
+                validateVideo(temp);
+                if (task.isCancelled()) throw new IOException("Đã hủy tải video");
+                if (!temp.renameTo(destination)) throw new IOException("Không thể lưu video");
                 main.post(() -> callback.done(destination, null));
             } catch (Exception error) {
                 if (temp != null) temp.delete();
@@ -122,5 +180,24 @@ final class SavedVideoStore {
             }
         });
         return task;
+    }
+
+    static void validateVideo(File file) throws IOException {
+        MediaExtractor extractor = new MediaExtractor();
+        try {
+            extractor.setDataSource(file.getPath());
+            for (int index = 0; index < extractor.getTrackCount(); index++) {
+                String mime = extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME);
+                if (mime == null || !mime.startsWith("video/")) continue;
+                extractor.selectTrack(index);
+                if (extractor.getSampleTime() >= 0) return;
+                extractor.unselectTrack(index);
+            }
+        } catch (IOException | RuntimeException invalid) {
+            throw new IOException("Nội dung tải về không phải tệp video hợp lệ", invalid);
+        } finally {
+            extractor.release();
+        }
+        throw new IOException("Tệp tải về không có dữ liệu hình ảnh");
     }
 }

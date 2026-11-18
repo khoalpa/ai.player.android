@@ -304,6 +304,7 @@ final class TdJsonTelegramSessionClient implements TelegramSessionClient {
     }
 
     private void downloadSaveableMessage(JSONObject message, MessageVideoResult callback) {
+        if (callback.isCancelled()) return;
         if (!running || flow.state() != TelegramAuthorizationFlow.State.READY || logoutCompletion != null) {
             callback.finished(null, "Phiên Telegram không còn sẵn sàng");
             return;
@@ -339,12 +340,11 @@ final class TdJsonTelegramSessionClient implements TelegramSessionClient {
             request.put("synchronous", false);
             send(request, result -> {
                 if ("error".equals(result.optString("@type"))) {
-                    MessageVideoResult waiting = downloads.remove(id);
-                    if (waiting != null) waiting.finished(null, messageError(result, "Không tải được tệp"));
+                    if (downloads.remove(id, callback)) callback.finished(null, messageError(result, "Không tải được tệp"));
                 } else onFile(result);
             });
         } catch (Exception error) {
-            downloads.remove(id);
+            downloads.remove(id, callback);
             callback.finished(null, "Không thể gửi yêu cầu tải video");
         }
     }
@@ -355,17 +355,37 @@ final class TdJsonTelegramSessionClient implements TelegramSessionClient {
         MessageVideoResult callback = downloads.get(id);
         if (callback == null) return;
         if (Math.max(file.optLong("size", 0), file.optLong("expected_size", 0)) > LIMIT_BYTES) {
-            downloads.remove(id);
+            if (!downloads.remove(id, callback)) return;
             main.post(() -> callback.finished(null, "Video vượt giới hạn 2 GB"));
             return;
         }
         JSONObject local = file.optJSONObject("local");
         if (local != null && local.optBoolean("is_downloading_completed", false)) {
-            downloads.remove(id);
+            if (!downloads.remove(id, callback)) return;
             String path = local.optString("path", "");
             main.post(() -> callback.finished(path.isEmpty() ? null : path,
                     path.isEmpty() ? "TDLib không trả về đường dẫn video" : null));
+        } else if (local != null) {
+            long bytes = local.optLong("downloaded_size");
+            long total = Math.max(file.optLong("size"), file.optLong("expected_size"));
+            main.post(() -> {
+                if (!callback.isCancelled()) callback.progress(bytes, total);
+            });
         }
+    }
+
+    @Override public void cancelMessageVideo(MessageVideoResult callback) {
+        downloads.forEach((id, waiting) -> {
+            if (waiting != callback || !downloads.remove(id, waiting)) return;
+            JSONObject cancel = request("cancelDownloadFile");
+            try {
+                cancel.put("file_id", id);
+                cancel.put("only_if_pending", false);
+                send(cancel, ignored -> {});
+            } catch (org.json.JSONException ignored) {
+                // The UI has already dropped this transfer's callback.
+            }
+        });
     }
 
     private String messageError(JSONObject response, String fallback) {

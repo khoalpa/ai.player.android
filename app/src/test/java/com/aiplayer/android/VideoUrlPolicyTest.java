@@ -7,7 +7,7 @@ import static org.junit.Assert.*;
 public class VideoUrlPolicyTest {
     @Test public void acceptsHttpsVideoWithQuery() throws Exception {
         URL url = VideoUrlPolicy.requireHttps("https://example.com/a.MP4?token=abc");
-        assertEquals(".mp4", VideoUrlPolicy.extension(url));
+        assertEquals(".mp4", VideoUrlPolicy.downloadExtension(url, url, null));
     }
     @Test public void rejectsHttp() throws Exception {
         try { VideoUrlPolicy.requireHttps("http://example.com/a.mp4"); fail("HTTP accepted"); }
@@ -18,8 +18,16 @@ public class VideoUrlPolicyTest {
         catch (IllegalArgumentException expected) { /* expected */ }
     }
     @Test public void rejectsWebpage() throws Exception {
-        try { VideoUrlPolicy.extension(new URL("https://example.com/watch")); fail("page accepted"); }
-        catch (IllegalArgumentException expected) { /* expected */ }
+        URL url = new URL("https://example.com/watch");
+        assertThrows(IllegalArgumentException.class,
+                () -> VideoUrlPolicy.downloadExtension(url, url, "text/html; charset=utf-8"));
+    }
+    @Test public void selectsExtensionFromVideoResponseOrRedirect() throws Exception {
+        URL original = new URL("https://example.com/download");
+        URL finalUrl = new URL("https://cdn.example.com/movie.webm");
+        assertEquals(".mp4", VideoUrlPolicy.downloadExtension(original, original, "Video/MP4; charset=binary"));
+        assertEquals(".webm", VideoUrlPolicy.downloadExtension(finalUrl, original, "application/octet-stream"));
+        assertEquals(".video", VideoUrlPolicy.downloadExtension(original, original, "application/octet-stream"));
     }
     @Test public void resolvesHttpsRelativeRedirect() throws Exception {
         URL next = VideoUrlPolicy.redirect(new URL("https://example.com/video.mp4"), "/new/video.mp4");

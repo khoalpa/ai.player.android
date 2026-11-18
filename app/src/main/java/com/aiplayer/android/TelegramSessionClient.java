@@ -8,7 +8,11 @@ package com.aiplayer.android;
  */
 interface TelegramSessionClient {
     interface Completion { void finished(String error); }
-    interface MessageVideoResult { void finished(String localFilePath, String error); }
+    interface MessageVideoResult {
+        void finished(String localFilePath, String error);
+        default boolean isCancelled() { return false; }
+        default void progress(long bytes, long total) {}
+    }
     interface Listener { void authorizationChanged(TelegramAuthorizationFlow.State state); }
 
     boolean isNativeAvailable();
@@ -18,5 +22,6 @@ interface TelegramSessionClient {
     void submitCode(char[] verificationCode, Completion callback);
     void submitTwoStepPassword(char[] password, Completion callback);
     void downloadMessageVideo(String publicChannel, long messageId, MessageVideoResult callback);
+    default void cancelMessageVideo(MessageVideoResult callback) {}
     void logoutAndClearSession(Completion callback);
 }

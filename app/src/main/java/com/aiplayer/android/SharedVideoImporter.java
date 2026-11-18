@@ -38,10 +38,15 @@ final class SharedVideoImporter {
                 SavedVideoStore store = new SavedVideoStore(context);
                 File dir = store.directory();
                 long claimed = -1;
+                String title = null;
                 try (Cursor cursor = resolver.query(uri,
-                        new String[]{OpenableColumns.SIZE}, null, null, null)) {
-                    if (cursor != null && cursor.moveToFirst() && !cursor.isNull(0))
-                        claimed = cursor.getLong(0);
+                        new String[]{OpenableColumns.SIZE, OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+                    if (cursor != null && cursor.moveToFirst()) {
+                        int sizeColumn = cursor.getColumnIndex(OpenableColumns.SIZE);
+                        int nameColumn = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                        if (sizeColumn >= 0 && !cursor.isNull(sizeColumn)) claimed = cursor.getLong(sizeColumn);
+                        if (nameColumn >= 0) title = cursor.getString(nameColumn);
+                    }
                 } catch (RuntimeException ignored) {
                     // Some providers do not expose their metadata.
                 }
@@ -70,13 +75,16 @@ final class SharedVideoImporter {
                         out.getFD().sync();
                     }
                 }
+                SavedVideoStore.validateVideo(partial);
                 if (copied == 0 || !partial.renameTo(output))
                     throw new IOException("Không thể lưu video chia sẻ");
+                store.remember(output, "Chia sẻ", null, title);
                 main.post(() -> callback.complete(output, null));
             } catch (Exception error) {
                 if (partial != null) partial.delete();
                 main.post(() -> callback.complete(null, error));
             }
         });
+        io.shutdown();
     }
 }

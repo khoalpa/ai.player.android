@@ -33,8 +33,32 @@ public class VideoSourceResolverTest {
                 VideoSourceResolver.classify("https://t.me/c/123456/3076").kind);
     }
     @Test public void rejectsFakeTelegramDomain() throws Exception {
-        assertEquals(VideoSourceResolver.Kind.UNSUPPORTED_PAGE,
+        assertEquals(VideoSourceResolver.Kind.DIRECT_FILE,
                 VideoSourceResolver.classify("https://t.me.evil.example/xdcmdj/3076").kind);
+    }
+    @Test public void classifiesTelegramPreviewForPublicAndTdlibDownload() throws Exception {
+        String link = "t.me/s/xdcmdj/3076?single";
+        VideoSourceResolver.Source source = VideoSourceResolver.classify(link);
+        assertEquals(VideoSourceResolver.Kind.TELEGRAM_PUBLIC_POST, source.kind);
+        assertEquals("https://t.me/xdcmdj/3076?embed=1",
+                VideoSourceResolver.publicTelegramEmbed(source).toExternalForm());
+        assertEquals(3076L, TelegramMessageReference.fromUrl(link).messageId);
+    }
+    @Test public void classifiesDirectUrlWithoutExtension() throws Exception {
+        assertEquals(VideoSourceResolver.Kind.DIRECT_FILE,
+                VideoSourceResolver.classify("https://example.com/download?token=x").kind);
+    }
+    @Test public void savedVideoKeyMatchesBothTelegramPostForms() throws Exception {
+        VideoSourceResolver.Source original = VideoSourceResolver.classify("t.me/ExampleChannel/3076");
+        VideoSourceResolver.Source preview = VideoSourceResolver.classify("https://t.me/s/examplechannel/3076?single");
+        assertEquals("examplechannel/3076", SavedVideoStore.telegramKey(original));
+        assertEquals(SavedVideoStore.telegramKey(original), SavedVideoStore.telegramKey(preview));
+        assertNull(SavedVideoStore.telegramKey(VideoSourceResolver.classify("https://example.com/video.mp4")));
+    }
+    @Test public void extractsNestedSourceWithoutExtension() throws Exception {
+        assertEquals("https://cdn.example.com/get?id=1",
+                VideoSourceResolver.extractPublicMediaUrl(
+                        "<video><source src='https://cdn.example.com/get?id=1'></video>"));
     }
     @Test public void extractsVideoTag() throws Exception {
         assertEquals("https://cdn.example.com/video.mp4?token=1&x=2",

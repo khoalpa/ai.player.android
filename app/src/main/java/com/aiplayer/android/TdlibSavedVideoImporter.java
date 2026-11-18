@@ -20,7 +20,7 @@ final class TdlibSavedVideoImporter {
 
     TdlibSavedVideoImporter(Context context) { this.context = context.getApplicationContext(); }
 
-    void importFile(String path, Callback callback) {
+    void importFile(String path, java.util.function.BooleanSupplier cancelled, Callback callback) {
         worker.execute(() -> {
             File partial = null;
             try {
@@ -46,6 +46,7 @@ final class TdlibSavedVideoImporter {
                     byte[] buffer = new byte[65536];
                     int count;
                     while ((count = source.read(buffer)) != -1) {
+                        if (cancelled.getAsBoolean()) throw new IOException("Đã hủy tải video");
                         bytes += count;
                         if (bytes > VideoUrlPolicy.MAX_BYTES || directory.getUsableSpace() < 1024 * 1024)
                             throw new IOException("Không đủ dung lượng hoặc video quá lớn");
@@ -53,6 +54,9 @@ final class TdlibSavedVideoImporter {
                     }
                     target.getFD().sync();
                 }
+                if (cancelled.getAsBoolean()) throw new IOException("Đã hủy tải video");
+                SavedVideoStore.validateVideo(partial);
+                if (cancelled.getAsBoolean()) throw new IOException("Đã hủy tải video");
                 if (bytes != length || !partial.renameTo(output))
                     throw new IOException("Không thể lưu tệp video Telegram");
                 main.post(() -> callback.completed(output, null));
@@ -61,5 +65,6 @@ final class TdlibSavedVideoImporter {
                 main.post(() -> callback.completed(null, error));
             }
         });
+        worker.shutdown();
     }
 }

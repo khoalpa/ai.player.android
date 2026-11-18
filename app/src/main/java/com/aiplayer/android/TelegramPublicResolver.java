@@ -17,7 +17,10 @@ final class TelegramPublicResolver {
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
 
-    void resolve(VideoSourceResolver.Source source, Callback callback) {
+    Runnable resolve(VideoSourceResolver.Source source, Callback callback) {
+        java.util.concurrent.atomic.AtomicBoolean cancelled = new java.util.concurrent.atomic.AtomicBoolean();
+        java.util.concurrent.atomic.AtomicReference<HttpURLConnection> active =
+                new java.util.concurrent.atomic.AtomicReference<>();
         executor.execute(() -> {
             HttpURLConnection connection = null;
             try {
@@ -27,6 +30,8 @@ final class TelegramPublicResolver {
                 connection.setReadTimeout(10000);
                 connection.setInstanceFollowRedirects(false);
                 connection.setRequestProperty("Accept", "text/html");
+                active.set(connection);
+                if (cancelled.get()) return;
                 int code = connection.getResponseCode();
                 if (code != 200) throw new java.io.IOException("Telegram trả về HTTP " + code);
                 String type = connection.getContentType();
@@ -37,6 +42,7 @@ final class TelegramPublicResolver {
                 try (InputStream stream = connection.getInputStream()) {
                     int n;
                     while ((n = stream.read(buffer)) != -1) {
+                        if (cancelled.get()) return;
                         if (output.size() + n > MAX_HTML_BYTES)
                             throw new java.io.IOException("Trang Telegram vượt giới hạn kiểm tra");
                         output.write(buffer, 0, n);
@@ -44,12 +50,23 @@ final class TelegramPublicResolver {
                 }
                 String media = VideoSourceResolver.extractPublicMediaUrl(
                         new String(output.toByteArray(), StandardCharsets.UTF_8));
-                main.post(() -> callback.resolved(media, null));
+                main.post(() -> {
+                    if (!cancelled.get()) callback.resolved(media, null);
+                });
             } catch (Exception error) {
-                main.post(() -> callback.resolved(null, error));
+                main.post(() -> {
+                    if (!cancelled.get()) callback.resolved(null, error);
+                });
             } finally {
+                active.set(null);
                 if (connection != null) connection.disconnect();
             }
         });
+        executor.shutdown();
+        return () -> {
+            cancelled.set(true);
+            HttpURLConnection connection = active.get();
+            if (connection != null) connection.disconnect();
+        };
     }
 }

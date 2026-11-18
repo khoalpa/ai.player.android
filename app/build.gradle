@@ -2,9 +2,39 @@ plugins {
     id "com.android.application"
 }
 
+def gitMetadata = { List<String> arguments ->
+    try {
+        def result = providers.exec {
+            workingDir = rootProject.projectDir
+            commandLine(["git"] + arguments)
+            ignoreExitValue = true
+        }
+        return result.result.get().exitValue == 0 ? result.standardOutput.asText.get().trim() : null
+    } catch (org.gradle.api.GradleException ignored) {
+        return null
+    }
+}
+def gitHead = gitMetadata(["rev-parse", "--verify", "HEAD"])
+def commit = gitHead != null && gitHead.matches("[0-9a-f]{40}|[0-9a-f]{64}") ? gitHead : ""
+def worktree = commit.isEmpty() ? null : gitMetadata(["status", "--porcelain", "--untracked-files=normal"])
+
 android {
     namespace = "com.aiplayer.android"
     compileSdk = 35
+    buildFeatures {
+        buildConfig = true
+    }
+
+    flavorDimensions += "distribution"
+    productFlavors {
+        standalone {
+            dimension = "distribution"
+            isDefault = true
+        }
+        play {
+            dimension = "distribution"
+        }
+    }
 
     defaultConfig {
         applicationId = "com.aiplayer.android"
@@ -12,6 +42,17 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
+        buildConfigField "String", "GIT_COMMIT", '"' + commit + '"'
+        buildConfigField "String", "GIT_WORKTREE", worktree == null ? '"unknown"'
+                : worktree.isEmpty() ? '"clean"' : '"dirty"'
+    }
+}
+
+androidComponents {
+    onVariants(selector().all()) { variant ->
+        def flavor = variant.flavorName ?: ""
+        variant.buildConfigFields.put("DISTRIBUTION_FLAVOR",
+                new com.android.build.api.variant.BuildConfigField("String", '"' + flavor + '"', null))
     }
 }
 
