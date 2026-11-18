@@ -418,7 +418,7 @@ public final class MainActivity extends Activity {
             if (error != null) {
                 if (!destroyed) new AlertDialog.Builder(this)
                         .setTitle("Không thể tải video Telegram")
-                        .setMessage("Trang nhúng không cung cấp tệp video trực tiếp. Bạn có thể mở bài đăng bằng tài khoản Telegram đã đăng nhập; nếu Telegram cho phép, hãy chia sẻ tệp video tới AI Player hoặc lưu video rồi chọn tệp trên thiết bị.\\n" + error.getMessage())
+                        .setMessage("Trang nhúng không cung cấp tệp video trực tiếp. Bạn có thể mở bài đăng bằng tài khoản Telegram đã đăng nhập; nếu Telegram cho phép, hãy chia sẻ tệp video tới AI Player hoặc lưu video rồi chọn tệp trên thiết bị.\n" + error.getMessage())
                         .setNegativeButton("Đóng", null)
                         .setPositiveButton("Mở trong Telegram", (d, w) -> openTelegramPost(source.url))
                         .show();
