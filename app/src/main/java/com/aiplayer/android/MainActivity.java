@@ -280,7 +280,7 @@ public final class MainActivity extends Activity {
 
     private Button iconButton(LinearLayout row, int icon, String description, boolean weighted, Runnable action) {
         Button button = new Button(this);
-        // Keep the 48dp touch target while drawing a compact 40dp control.
+        // Keep a 48dp icon touch target for accessibility in compact mode.
         button.setMinWidth(dp(48));
         button.setMinimumWidth(dp(48));
         button.setMinHeight(dp(48));
@@ -477,6 +477,7 @@ public final class MainActivity extends Activity {
     private Spinner selection(LinearLayout form, String label, List<String> options, int selected) {
         TextView caption = new TextView(this);
         caption.setText(label);
+        caption.setTextSize(12);
         form.addView(caption);
         Spinner picker = new Spinner(this);
         ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, options);
@@ -484,7 +485,7 @@ public final class MainActivity extends Activity {
         picker.setAdapter(adapter);
         picker.setSelection(Math.max(0, selected));
         picker.setContentDescription(label);
-        form.addView(picker, new LinearLayout.LayoutParams(-1, dp(48)));
+        form.addView(picker, new LinearLayout.LayoutParams(-1, dp(40)));
         return picker;
     }
 
@@ -496,7 +497,7 @@ public final class MainActivity extends Activity {
 
     private LinearLayout form() {
         LinearLayout form = column();
-        form.setPadding(dp(20), dp(12), dp(20), dp(12));
+        form.setPadding(dp(12), dp(8), dp(12), dp(8));
         return form;
     }
 
