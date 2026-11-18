@@ -46,6 +46,20 @@ final class TdJsonTelegramSessionClient implements TelegramSessionClient {
         }
     }
 
+    void closeTransport() {
+        stateListener = null;
+        running = false;
+        pending.clear();
+        downloads.clear();
+        if (nativeLoaded && clientId != 0) {
+            try {
+                JsonClient.send(clientId, request("close").toString());
+            } catch (LinkageError ignored) {
+                // Native bridge may already have been unloaded.
+            }
+        }
+    }
+
     @Override public boolean isNativeAvailable() { return nativeLoaded; }
     @Override public TelegramAuthorizationFlow.State authorizationState() { return flow.state(); }
 
