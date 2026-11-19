@@ -3,7 +3,7 @@ package com.aiplayer.android;
 final class TranscriptCue {
     final long startMs;
     final long endMs;
-    final String sourceText;
+    String sourceText;
     String targetText;
 
     boolean hasTranslation() {

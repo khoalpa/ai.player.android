@@ -32,6 +32,17 @@ public class TranslationBatchTest {
         assertEquals("một", cues.get(0).targetText);
     }
 
+    @Test public void repairingOneCueLeavesOtherCuesUntouched() {
+        List<TranscriptCue> cues = cues();
+        TranslationBatch batch = new TranslationBatch(cues, "vi", "vi", cues.get(2));
+        assertEquals(1, batch.input.size());
+        assertSame(cues.get(2), batch.input.get(0));
+        batch.accept(0, "ba");
+        assertTrue(cues.get(0).hasTranslation());
+        assertFalse(cues.get(1).hasTranslation());
+        assertEquals("ba", cues.get(2).targetText);
+    }
+
     @Test public void partialLanguageChangeNeverMixesOldAndNewLanguages() {
         List<TranscriptCue> cues = cues();
         TranslationBatch batch = new TranslationBatch(cues, "vi", "en");

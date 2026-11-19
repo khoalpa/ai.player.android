@@ -2,7 +2,6 @@ package com.aiplayer.android;
 
 import android.content.Context;
 import android.content.res.AssetManager;
-import android.net.Network;
 
 import org.vosk.Model;
 import org.vosk.android.StorageService;
@@ -24,8 +23,6 @@ import java.util.zip.ZipInputStream;
 final class VoskModelStore {
     interface Callback {
         boolean isCancelled();
-
-        default Network downloadNetwork() { return null; }
 
         default void onDownloadProgress(int percent) {}
 
@@ -148,8 +145,7 @@ final class VoskModelStore {
         try {
             checkCancelled(callback);
             URL url = new URL(spec.url);
-            Network network = callback.downloadNetwork();
-            conn = (HttpURLConnection) (network == null ? url.openConnection() : network.openConnection(url));
+            conn = (HttpURLConnection) url.openConnection();
             activeDownload = callback;
             activeConnection = conn;
             checkCancelled(callback);
@@ -225,6 +221,22 @@ final class VoskModelStore {
 
     private File modelDir(String assetName) {
         return new File(new File(context.getFilesDir(), "vosk_models"), assetName);
+    }
+
+    long downloadedBytes() {
+        File[] models = new File(context.getFilesDir(), "vosk_models").listFiles(
+                file -> file.isDirectory() && !file.getName().endsWith(".tmp") && isModelReady(file));
+        long bytes = 0;
+        if (models != null) for (File model : models) bytes += directoryBytes(model);
+        return bytes;
+    }
+
+    private static long directoryBytes(File path) {
+        if (path.isFile()) return path.length();
+        File[] children = path.listFiles();
+        long bytes = 0;
+        if (children != null) for (File child : children) bytes += directoryBytes(child);
+        return bytes;
     }
 
     private boolean isModelReady(File dir) {

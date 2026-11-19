@@ -14,6 +14,7 @@ final class CueSpeech {
     private final TextToSpeech engine;
     private final Consumer<String> status;
     private boolean ready;
+    private boolean initializing = true;
     private TranscriptCue lastCue;
     private String lastText;
     private String lastLanguage;
@@ -23,9 +24,10 @@ final class CueSpeech {
 
     CueSpeech(Context context, Consumer<String> status) {
         this.status = status;
-        engine = new TextToSpeech(context, result -> {
+        engine = new TextToSpeech(context, result -> main.post(() -> {
             ready = result == TextToSpeech.SUCCESS;
-        });
+            initializing = false;
+        }));
         engine.setOnUtteranceProgressListener(new UtteranceProgressListener() {
             @Override
             public void onStart(String id) {}
@@ -82,6 +84,21 @@ final class CueSpeech {
             status.accept("Chưa có giọng đọc cho ngôn ngữ " + language + ".");
             return;
         }
+        speak(text, volume);
+    }
+
+    void preview(String text, String language, float volume) {
+        stop();
+        if (initializing) {
+            status.accept("Đang khởi tạo giọng đọc. Hãy thử lại sau.");
+        } else if (!supports(language) || engine.setLanguage(Locale.forLanguageTag(language)) < 0) {
+            status.accept("Thiết bị chưa có giọng đọc tiếng Việt.");
+        } else {
+            speak(text, volume);
+        }
+    }
+
+    private void speak(String text, float volume) {
         Bundle parameters = new Bundle();
         parameters.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, volume);
         activeUtterance = "cue-" + ++utteranceSequence;

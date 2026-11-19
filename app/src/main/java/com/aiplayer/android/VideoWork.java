@@ -2,9 +2,16 @@ package com.aiplayer.android;
 
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
+import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.function.Consumer;
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 /** Process-owned work; never retains an Activity after detach. Main thread only. */
 final class VideoWork {
@@ -13,6 +20,8 @@ final class VideoWork {
     final OfflineModels models;
     private final Context context;
     private final PlaybackSessionStore store;
+    private final SharedPreferences homeTasks;
+    private final List<Result> unreadResults = new ArrayList<>();
     private final Handler main = new Handler(Looper.getMainLooper());
     private Consumer<String> observer;
     private Runnable modelObserver;
@@ -20,8 +29,25 @@ final class VideoWork {
     private long savedVersion = -1;
     private String lastStatus;
     private boolean checkpointPending;
+    private Uri deletingTranscript;
     long position;
+    // Retained with the current video across Activity recreation. -1 means no pending entry.
+    int pendingRecentGrantFlags = -1;
     private final Runnable checkpoint = this::saveCheckpoint;
+
+    static final class Result {
+        final Uri video;
+        final String name;
+        final VideoSession.Task task;
+        final String identity;
+
+        Result(Uri video, String name, VideoSession.Task task, String identity) {
+            this.video = video;
+            this.name = name;
+            this.task = task;
+            this.identity = identity;
+        }
+    }
 
     static VideoWork obtain(Context context) {
         if (instance == null) instance = new VideoWork(context.getApplicationContext());
@@ -33,6 +59,17 @@ final class VideoWork {
     private VideoWork(Context context) {
         this.context = context;
         store = new PlaybackSessionStore(context);
+        homeTasks = context.getSharedPreferences("home_tasks", Context.MODE_PRIVATE);
+        try {
+            JSONArray saved = new JSONArray(homeTasks.getString("unread", "[]"));
+            for (int i = 0; i < saved.length(); i++) {
+                JSONObject item = saved.getJSONObject(i);
+                unreadResults.add(new Result(Uri.parse(item.getString("video")), item.optString("name", null),
+                        VideoSession.Task.valueOf(item.getString("task")), item.optString("identity", null)));
+            }
+        } catch (JSONException | IllegalArgumentException ignored) {
+            // Keep any results that could be read before the invalid entry.
+        }
         models = new OfflineModels(context, this::modelsChanged);
         session = new VideoSession(context, this::changed, models);
     }
@@ -59,6 +96,59 @@ final class VideoWork {
 
     String status() { return lastStatus; }
 
+    List<Result> unreadResults() { return new ArrayList<>(unreadResults); }
+
+    boolean isResultUnread(Result result) { return unreadResults.contains(result); }
+
+    void markResultViewed(Result result) {
+        if (unreadResults.remove(result)) saveResults();
+    }
+
+    void discardResults(Uri video, boolean translationOnly) {
+        if (unreadResults.removeIf(result -> result.video.equals(video)
+                && (!translationOnly || result.task == VideoSession.Task.TRANSLATION))) {
+            saveResults();
+        }
+    }
+
+    Uri deletingTranscript() { return deletingTranscript; }
+
+    void removeTranscript(PlaybackSessionStore.StoredTranscript entry, boolean translationOnly,
+                          String sourceLanguage, Consumer<PlaybackSessionStore.Snapshot> completed) {
+        Uri uri = entry.snapshot.uri;
+        deletingTranscript = uri;
+        store.removeTranscript(entry, translationOnly, updated -> {
+            Runnable finish = () -> {
+                if (updated != null) {
+                    discardResults(uri, translationOnly);
+                    if (uri.equals(session.videoUri())) session.open(uri, sourceLanguage, updated);
+                }
+                deletingTranscript = null;
+                completed.accept(updated);
+                releaseIfIdle();
+            };
+            if (updated != null && !translationOnly) {
+                session.removeCachedTranscript(updated.identity, entry.snapshot.source, finish);
+            } else {
+                finish.run();
+            }
+        });
+    }
+
+    private void saveResults() {
+        JSONArray saved = new JSONArray();
+        try {
+            for (Result result : unreadResults) {
+                saved.put(new JSONObject().put("video", result.video.toString())
+                        .put("name", result.name).put("task", result.task.name()).put("identity", result.identity));
+            }
+        } catch (JSONException ignored) {
+            // These keys and values are all strings.
+            return;
+        }
+        homeTasks.edit().putString("unread", saved.toString()).apply();
+    }
+
     private void changed(String message) {
         if (message != null) lastStatus = message;
         if (session.busy && !serviceRequested) {
@@ -82,6 +172,14 @@ final class VideoWork {
         } else {
             saveCheckpoint();
         }
+        if (session.finishedTask != null) {
+            Result result = new Result(session.videoUri(), session.videoName, session.finishedTask, session.identity());
+            session.finishedTask = null;
+            unreadResults.removeIf(previous -> previous.video.equals(result.video)
+                    && (previous.task == result.task || result.task == VideoSession.Task.TRANSCRIPT));
+            unreadResults.add(0, result);
+            saveResults();
+        }
         VideoWorkService.refresh();
         if (observer != null) observer.accept(message);
     }
@@ -89,7 +187,8 @@ final class VideoWork {
     private void saveCheckpoint() {
         main.removeCallbacks(checkpoint);
         checkpointPending = false;
-        if (session.videoUri() != null && savedVersion != session.transcriptVersion()) {
+        if (session.videoUri() != null && !session.videoUri().equals(deletingTranscript)
+                && savedVersion != session.transcriptVersion()) {
             savedVersion = session.transcriptVersion();
             store.checkpoint(session);
         }
@@ -116,7 +215,8 @@ final class VideoWork {
     }
 
     private void releaseIfIdle() {
-        if (instance != this || observer != null || session.busy || serviceRequested || models.pending()) return;
+        if (instance != this || observer != null || session.busy || serviceRequested
+                || models.pending() || deletingTranscript != null) return;
         main.removeCallbacksAndMessages(null);
         session.close();
         store.close();

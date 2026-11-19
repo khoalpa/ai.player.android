@@ -14,7 +14,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * TDLib JSONJava transport. Requires matching official libtdjsonjava.so at runtime.
- * Only public channel messages explicitly requested by the user are downloaded.
+ * Only messages explicitly requested by the user are downloaded.
  */
 final class TdJsonTelegramSessionClient implements TelegramSessionClient {
     private static final String TAG = "TdJsonSession";
@@ -45,6 +45,8 @@ final class TdJsonTelegramSessionClient implements TelegramSessionClient {
             flow.onNativeLibraryUnavailable();
         }
     }
+
+    void detachListener() { stateListener = null; }
 
     void closeTransport() {
         stateListener = null;
@@ -274,6 +276,29 @@ final class TdJsonTelegramSessionClient implements TelegramSessionClient {
                 }
             });
         } catch (Exception error) { callback.finished(null, "Liên kết Telegram không hợp lệ"); }
+    }
+
+    @Override public void downloadPrivateMessageVideo(String postUrl, MessageVideoResult callback) {
+        if (!nativeLoaded || !running || flow.state() != TelegramAuthorizationFlow.State.READY) {
+            callback.finished(null, "Bạn cần đăng nhập Telegram");
+            return;
+        }
+        try {
+            JSONObject get = request("getMessageLinkInfo");
+            get.put("url", postUrl);
+            send(get, info -> {
+                if (callback.isCancelled()) return;
+                JSONObject message = "messageLinkInfo".equals(info.optString("@type"))
+                        ? info.optJSONObject("message") : null;
+                if (message == null) {
+                    callback.finished(null, "Không truy cập được bài đăng. Hãy kiểm tra quyền truy cập của tài khoản Telegram.");
+                    return;
+                }
+                onMessage(message, callback);
+            });
+        } catch (Exception error) {
+            callback.finished(null, "Liên kết Telegram không hợp lệ");
+        }
     }
 
     private void onMessage(JSONObject message, MessageVideoResult callback) {

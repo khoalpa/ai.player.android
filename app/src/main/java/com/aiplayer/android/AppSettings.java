@@ -8,12 +8,38 @@ final class AppSettings {
     private static final String SOURCE_LANGUAGE = "sourceLanguage";
     private static final String TARGET_LANGUAGE = "targetLanguage";
     private static final String JAPANESE_DEFAULT_MIGRATED = "japaneseDefaultMigrated";
+    static final int DEFAULT_SOURCE_VOLUME = 70;
+    static final int DEFAULT_DUBBING_VOLUME = 100;
+
+    enum SubtitleColor {
+        WHITE("Trắng", 0xffffffff),
+        YELLOW("Vàng nhạt", 0xfffff176),
+        BLUE("Xanh dương nhạt", 0xff81d4fa),
+        GREEN("Xanh lá nhạt", 0xffa5d6a7),
+        PINK("Hồng nhạt", 0xfff8bbd0);
+
+        final String label;
+        final int argb;
+
+        SubtitleColor(String label, int argb) {
+            this.label = label;
+            this.argb = argb;
+        }
+
+        static SubtitleColor fromArgb(int argb) {
+            for (SubtitleColor color : values()) {
+                if (color.argb == argb) return color;
+            }
+            return WHITE;
+        }
+    }
 
     String sourceLanguage = "ja";
     String targetLanguage = "vi";
-    int sourceVolume = 70;
-    int dubbingVolume = 100;
+    int sourceVolume = DEFAULT_SOURCE_VOLUME;
+    int dubbingVolume = DEFAULT_DUBBING_VOLUME;
     int subtitleSize = 16;
+    SubtitleColor subtitleColor = SubtitleColor.WHITE;
     int colorMode;
     boolean raisedControls = true;
     int fontSize = 1;
@@ -30,6 +56,7 @@ final class AppSettings {
         settings.sourceVolume = prefs.getInt("sourceVolume", settings.sourceVolume);
         settings.dubbingVolume = prefs.getInt("dubbingVolume", settings.dubbingVolume);
         settings.subtitleSize = prefs.getInt("subtitleSize", settings.subtitleSize);
+        settings.subtitleColor = SubtitleColor.fromArgb(prefs.getInt("subtitleColor", SubtitleColor.WHITE.argb));
         settings.colorMode = Math.max(0, Math.min(2, prefs.getInt("colorMode", 0)));
         settings.raisedControls = prefs.getBoolean("raisedControls", true);
         settings.fontSize = Math.max(0, Math.min(2, prefs.getInt("fontSize", 1)));
@@ -53,6 +80,7 @@ final class AppSettings {
                 .putInt("sourceVolume", sourceVolume)
                 .putInt("dubbingVolume", dubbingVolume)
                 .putInt("subtitleSize", subtitleSize)
+                .putInt("subtitleColor", subtitleColor.argb)
                 .putInt("colorMode", colorMode)
                 .putBoolean("raisedControls", raisedControls)
                 .putInt("fontSize", fontSize)

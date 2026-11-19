@@ -43,9 +43,9 @@ final class TranscriptCache {
         }
     }
 
-    static String videoIdentity(Context context, Uri uri, ReadCancellation cancellation) {
+    static String metadataIdentity(Context context, Uri uri, android.os.CancellationSignal signal) {
         String[] columns = {Document.COLUMN_SIZE, Document.COLUMN_LAST_MODIFIED};
-        try (Cursor row = context.getContentResolver().query(uri, columns, null, null, null, cancellation.signal)) {
+        try (Cursor row = context.getContentResolver().query(uri, columns, null, null, null, signal)) {
             if (row != null && row.moveToFirst()) {
                 int size = row.getColumnIndex(Document.COLUMN_SIZE);
                 int modified = row.getColumnIndex(Document.COLUMN_LAST_MODIFIED);
@@ -57,13 +57,12 @@ final class TranscriptCache {
         } catch (Exception ex) {
             // Providers may reject the requested metadata columns.
         }
-        if (cancellation.isCancelled()) return null;
-        return contentIdentity(context, uri, cancellation);
+        return null;
     }
 
     // Runs on the session/cache IO executor. Hash the full file when metadata is
     // unavailable so replacing content at the same URI cannot restore stale cues.
-    private static String contentIdentity(Context context, Uri uri, ReadCancellation cancellation) {
+    static String contentIdentity(Context context, Uri uri, ReadCancellation cancellation) {
         try (android.content.res.AssetFileDescriptor descriptor = context.getContentResolver()
                 .openAssetFileDescriptor(uri, "r", cancellation.signal)) {
             if (descriptor == null) return null;
@@ -78,7 +77,7 @@ final class TranscriptCache {
         }
     }
 
-    List<TranscriptCue> readLatest(String key, List<VideoSession.AudioTrack> tracks) {
+    synchronized List<TranscriptCue> readLatest(String key, List<VideoSession.AudioTrack> tracks) {
         List<TranscriptCue> latest = new ArrayList<>();
         long latestTime = Long.MIN_VALUE;
         if (key == null) return latest;
@@ -104,7 +103,7 @@ final class TranscriptCache {
         return latest;
     }
 
-    void write(String key, int track, List<TranscriptCue> cues) {
+    synchronized void write(String key, int track, List<TranscriptCue> cues) {
         if (key == null || cues.isEmpty()) return;
         AtomicFile file = new AtomicFile(fileFor(key, track));
         FileOutputStream output = null;
@@ -121,6 +120,32 @@ final class TranscriptCache {
             if (output != null) file.failWrite(output);
             Log.w(TAG, "Could not save transcript");
         }
+    }
+
+    synchronized void removeFor(String identity, String source) {
+        java.util.Set<String> keys = new java.util.HashSet<>();
+        for (String language : java.util.Arrays.asList("auto", "ja", "en", "vi", "ko", "zh", source)) {
+            if (language != null) keys.add(keyForIdentity(identity, language));
+        }
+        File[] files = cacheFiles();
+        if (files != null) for (File file : files) {
+            if (keys.contains(file.getName().substring(0, 64))) file.delete();
+        }
+    }
+
+    private File[] cacheFiles() {
+        return new File(context.getCacheDir(), "transcripts").listFiles(
+                file -> file.isFile() && file.getName().matches("[0-9a-f]{64}-[0-9]+[.]json([.]bak|[.]new)?"));
+    }
+
+    synchronized long cacheBytes(boolean clear) {
+        File[] files = cacheFiles();
+        long bytes = 0;
+        if (files != null) for (File file : files) {
+            long size = file.length();
+            if (!clear || file.delete()) bytes += size;
+        }
+        return bytes;
     }
 
     private File fileFor(String key, int track) {

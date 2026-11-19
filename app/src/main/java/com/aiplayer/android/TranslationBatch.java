@@ -11,10 +11,16 @@ final class TranslationBatch {
     private boolean accepted;
 
     TranslationBatch(List<TranscriptCue> cues, String previousTarget, String target) {
+        this(cues, previousTarget, target, null);
+    }
+
+    TranslationBatch(List<TranscriptCue> cues, String previousTarget, String target, TranscriptCue selected) {
         all = cues;
         replacingLanguage = !target.equals(previousTarget);
         for (TranscriptCue cue : cues) {
-            if (replacingLanguage || !cue.hasTranslation()) input.add(cue);
+            if ((selected == null || cue == selected) && (replacingLanguage || !cue.hasTranslation())) {
+                input.add(cue);
+            }
         }
     }
 

@@ -22,6 +22,9 @@ interface TelegramSessionClient {
     void submitCode(char[] verificationCode, Completion callback);
     void submitTwoStepPassword(char[] password, Completion callback);
     void downloadMessageVideo(String publicChannel, long messageId, MessageVideoResult callback);
+    default void downloadPrivateMessageVideo(String postUrl, MessageVideoResult callback) {
+        callback.finished(null, "Bản dựng này chưa hỗ trợ liên kết Telegram riêng tư.");
+    }
     default void cancelMessageVideo(MessageVideoResult callback) {}
     void logoutAndClearSession(Completion callback);
 }

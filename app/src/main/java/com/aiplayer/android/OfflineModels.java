@@ -20,7 +20,7 @@ import java.util.Set;
 
 /** Main-thread state for model management, shared with the playback session. */
 final class OfflineModels {
-    enum Operation { DOWNLOADING, DELETING, DOWNLOAD_FAILED, DELETE_FAILED, WIFI_REQUIRED }
+    enum Operation { DOWNLOADING, DELETING, DOWNLOAD_FAILED, DELETE_FAILED }
 
     final VoskModelStore vosk;
     final Map<String, Operation> recognition = new HashMap<>();
@@ -59,7 +59,7 @@ final class OfflineModels {
                         String language = model.getLanguage();
                         downloadedTranslations.add(language);
                         Operation previous = translation.get(language);
-                        if (previous == Operation.DOWNLOAD_FAILED || previous == Operation.WIFI_REQUIRED) {
+                        if (previous == Operation.DOWNLOAD_FAILED) {
                             translation.remove(language);
                         }
                     }
@@ -75,9 +75,8 @@ final class OfflineModels {
 
     void downloadRecognition(String language) {
         if (pending(recognition)) return;
-        Network wifi = wifiNetwork();
-        if (wifi == null) {
-            finish(recognition, language, Operation.WIFI_REQUIRED);
+        if (!hasInternetConnection()) {
+            finish(recognition, language, Operation.DOWNLOAD_FAILED);
             return;
         }
         recognitionPercent = -1;
@@ -85,7 +84,6 @@ final class OfflineModels {
         changed.run();
         vosk.prepare(language, new VoskModelStore.Callback() {
             @Override public boolean isCancelled() { return false; }
-            @Override public Network downloadNetwork() { return wifi; }
             @Override public void onDownloadProgress(int percent) {
                 if (percent % 10 == 0) main.post(() -> {
                     recognitionPercent = percent;
@@ -113,15 +111,15 @@ final class OfflineModels {
 
     void downloadTranslations(List<String> languages) {
         if (languages.isEmpty() || pending(translation)) return;
-        if (wifiNetwork() == null) {
-            for (String language : languages) translation.put(language, Operation.WIFI_REQUIRED);
+        if (!hasInternetConnection()) {
+            for (String language : languages) translation.put(language, Operation.DOWNLOAD_FAILED);
             changed.run();
             return;
         }
         translationQuery++;
         for (String language : languages) translation.put(language, Operation.DOWNLOADING);
         changed.run();
-        DownloadConditions conditions = new DownloadConditions.Builder().requireWifi().build();
+        DownloadConditions conditions = new DownloadConditions.Builder().build();
         RemoteModelManager manager = RemoteModelManager.getInstance();
         for (String language : languages) {
             manager.download(new TranslateRemoteModel.Builder(language).build(), conditions)
@@ -151,11 +149,11 @@ final class OfflineModels {
         return TranslateLanguage.fromLanguageTag(language) != null && !TranslateLanguage.ENGLISH.equals(language);
     }
 
-    private Network wifiNetwork() {
+    private boolean hasInternetConnection() {
         Network network = connectivity.getActiveNetwork();
-        if (network == null) return null;
+        if (network == null) return false;
         NetworkCapabilities capabilities = connectivity.getNetworkCapabilities(network);
-        return capabilities != null && capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ? network : null;
+        return capabilities != null && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
     }
 
     private void finish(Map<String, Operation> operations, String language, Operation failure) {

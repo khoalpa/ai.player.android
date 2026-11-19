@@ -38,7 +38,8 @@ final class SavedVideosDialog {
         this.settings = settings;
     }
 
-    void show(Consumer<File> open, Predicate<File> delete, Uri current, long position, boolean inUse) {
+    void show(Consumer<File> open, Predicate<File> delete, Uri current, long position, boolean inUse,
+              boolean bySize, Runnable dismissed) {
         ListView list = new ListView(activity);
         list.setDividerHeight(dp(1));
         TextView empty = new TextView(activity);
@@ -49,9 +50,9 @@ final class SavedVideosDialog {
         content.addView(empty);
         content.addView(list, new LinearLayout.LayoutParams(-1, 0, 1));
         list.setEmptyView(empty);
+        java.util.List<File> files = new java.util.ArrayList<>(java.util.Arrays.asList(videos.list()));
+        if (bySize) files.sort(java.util.Comparator.comparingLong(File::length).reversed());
         BaseAdapter adapter = new BaseAdapter() {
-            private final java.util.List<File> files = new java.util.ArrayList<>(
-                    java.util.Arrays.asList(videos.list()));
 
             @Override public int getCount() { return files.size(); }
             @Override public File getItem(int index) { return files.get(index); }
@@ -62,7 +63,9 @@ final class SavedVideosDialog {
                 VideoRow row = recycled == null ? new VideoRow() : (VideoRow) recycled;
                 row.setTag(file);
                 String title = videos.displayName(file);
-                String source = videos.sourceLabel(file);
+                String sourceLabel = videos.sourceLabel(file);
+                String size = android.text.format.Formatter.formatFileSize(activity, file.length());
+                String source = sourceLabel.isEmpty() ? size : sourceLabel + " · " + size;
                 row.name.setText(title);
                 row.setCurrent(Uri.fromFile(file).equals(current));
                 row.setOnClickListener(view -> {
@@ -75,7 +78,7 @@ final class SavedVideosDialog {
                     menu.getMenu().add("Xóa video").setEnabled(!inUse || !Uri.fromFile(file).equals(current))
                             .setOnMenuItemClickListener(item -> {
                                 new PlayerAppearance.DialogBuilder(activity, settings).setTitle("Xóa video?")
-                                        .setMessage(title).setNegativeButton("Hủy", null)
+                                        .setMessage(title + "\nDung lượng dự kiến thu hồi · " + size).setNegativeButton("Hủy", null)
                                         .setPositiveButton("Xóa", (window, which) -> {
                                             if (delete.test(file)) {
                                                 previews.remove(file);
@@ -109,6 +112,7 @@ final class SavedVideosDialog {
         list.setAdapter(adapter);
         dialog = new PlayerAppearance.DialogBuilder(activity, settings).setTitle("Video đã lưu").setView(content)
                 .setNegativeButton("Đóng", null).show();
+        dialog.setOnDismissListener(window -> dismissed.run());
         dialog.getWindow().setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
     }
 

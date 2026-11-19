@@ -1,21 +1,35 @@
 # AI Player for Android
 
-Trình phát video cục bộ có thể tạo transcript từ track âm thanh, dịch trên thiết bị và đọc phụ đề đồng bộ với video.
+AI Player phát video bằng Media3, tạo transcript từ lời thoại bằng Vosk, dịch trên thiết bị bằng ML Kit và phát âm phụ đề bằng TextToSpeech của Android.
 
-## Sử dụng
+## Mở và lưu video
 
-1. Chọn **Mở video** để phát tệp bằng Media3.
-2. Đặt ngôn ngữ lời thoại trong **Ngôn ngữ và âm lượng**. Vosk hỗ trợ `ja`, `en`, `vi`, `ko`, `zh`. Mặc định là `ja` sang `vi`.
-3. Chọn **Tạo transcript** và chọn track âm thanh nếu video có nhiều track. Hoặc chọn **Nhập SRT/VTT** để dùng phụ đề có mốc thời gian.
-4. Chọn **Dịch** để dịch từng đoạn bằng ML Kit. Lần đầu có thể cần kết nối để tải model nhận dạng hoặc dịch.
-5. Chọn **Tắt**, **Gốc** hoặc **Bản dịch** riêng cho phụ đề và giọng đọc. Thiết bị cần giọng TextToSpeech tương ứng. Nếu lời đọc dài hơn đoạn phụ đề, ứng dụng dừng phần còn lại để theo kịp video.
-6. Mở **Xem transcript** để xem các đoạn và chạm vào một đoạn để tua tới đó.
+- **Mở video → Chọn tệp trên thiết bị** để phát tệp cục bộ. Màn hình khởi động hiển thị tối đa ba video gần đây và cho phép mở lại tại vị trí đã lưu.
+- **Mở video → Tải video từ URL** để tải video từ liên kết được hỗ trợ. Video tải thành công xuất hiện trong **Video đã lưu**.
+- Có thể chia sẻ tệp video từ Telegram sang AI Player bằng menu chia sẻ Android. Với liên kết bài đăng Telegram, ứng dụng có thể thử tải từ bài đăng công khai hoặc dùng tài khoản Telegram qua TDLib. Khả năng tải phụ thuộc vào quyền truy cập và quyền lưu của bài đăng. Xem [luồng nhập Telegram](docs/telegram-import.md) và [tích hợp TDLib](docs/telegram-tdlib-integration.md).
 
-Luồng hiện tại nhận video cục bộ và phụ đề SRT/VTT. Ứng dụng dùng quyền `INTERNET` để tải model. Xem `app/src/main/assets/README-vosk-models.txt` để đóng gói model Vosk vào APK.
+## Transcript, bản dịch và phụ đề
+
+1. Vào **Cài đặt → Ngôn ngữ và phụ đề** để chọn ngôn ngữ nguồn và đích. Mặc định là tiếng Nhật sang tiếng Việt. Vosk hỗ trợ nhận dạng tiếng Nhật, Anh, Việt, Hàn và Trung.
+2. Chọn **Tạo transcript** và chọn track âm thanh nếu video có nhiều track. Có thể dùng **Nhập SRT/VTT** khi đã có phụ đề theo thời gian.
+3. Chọn **Dịch**. Trong **Cài đặt → Quản lý model**, có thể tải trước model nhận dạng và dịch qua Wi-Fi hoặc dữ liệu di động để dùng offline. Tiếng Anh là ngôn ngữ trung gian của ML Kit và không cần tải gói dịch riêng.
+4. Nếu bản dịch còn thiếu, chọn **Dịch lại N đoạn thiếu**. Khi cần xử lý từng đoạn, chọn **Xử lý N đoạn thiếu**, mở đoạn theo mốc thời gian, nghe lại hoặc chỉnh lời gốc và ngôn ngữ nguồn, rồi dịch đoạn đó. Các đoạn đã dịch được giữ lại.
+5. Chọn **Tắt**, **Gốc** hoặc **Bản dịch** riêng cho **Phụ đề** và **Phát âm**. Phát âm cần giọng TextToSpeech tương ứng trên thiết bị. Có thể chạm vào một đoạn trong danh sách transcript để tua đến mốc đó.
+
+Có thể đóng gói model nhận dạng Vosk vào APK theo [hướng dẫn model Vosk](app/src/main/assets/README-vosk-models.txt).
 
 ## Build và kiểm thử
 
-Cần Android SDK 35, JDK tương thích với cấu hình Gradle của repo và thiết bị hoặc máy ảo Android API 26 trở lên.
+Cần JDK 17, Android SDK 35 và thiết bị hoặc máy ảo Android 8.0 (API 26) trở lên. Trong Android Studio, mở thư mục gốc dự án, chọn `standaloneDebug` hoặc `playDebug` trong **Build Variants**, rồi chọn thiết bị và bấm **Run**.
+
+| Biến thể | Mục đích |
+|---|---|
+| `standalone` | Cài đặt riêng bằng APK, có danh sách host URL mở rộng |
+| `play` | Bản build dành cho Google Play |
+
+Để kiểm tra đăng nhập Telegram qua TDLib trên thiết bị `arm64-v8a`, cần đóng gói thư viện native tương ứng. Trên Linux hoặc WSL2 có Docker, chạy `bash scripts/build-tdlib-jsonjava.sh` trước khi build. Xem [hướng dẫn TDLib](docs/telegram-tdlib-integration.md).
+
+Chạy từ thư mục gốc trên Windows. Trên Linux hoặc macOS, thay `.\gradlew.bat` bằng `./gradlew`.
 
 ```powershell
 .\gradlew.bat :app:assembleStandaloneDebug :app:testStandaloneDebugUnitTest :app:lintStandaloneDebug
@@ -40,7 +54,7 @@ APK debug nằm trong `app/build/outputs/apk/<flavor>/debug/`. Trên thiết b�
 - Định danh video được tính một lần khi mở rồi dùng lại cho cache trong phiên. Khi chọn/mở lại video, ứng dụng xác minh lại định danh để phát hiện thay đổi nội dung; không hỗ trợ thay nội dung tệp trong lúc tác vụ đang đọc chính tệp đó.
 - Truy vấn tên, metadata và hash chạy ở luồng nền. Đổi lựa chọn video hủy yêu cầu trước, gửi tín hiệu hủy tới provider và đóng luồng đọc đang mở. Provider cần hỗ trợ hủy/đóng luồng để ngắt được thao tác I/O đang bị chặn.
 - Nhận dạng/dịch tiếp tục khi rời màn hình hoặc Activity bị tạo lại trong cùng tiến trình. Thông báo xử lý có nút **Hủy** và mở lại ứng dụng; Android 13+ hỏi quyền thông báo ở tác vụ đầu tiên. Từ chối quyền không chặn xử lý nhưng thông báo có thể chỉ xuất hiện trong trình quản lý tác vụ hệ thống.
-- Dịch ghi nhận kết quả theo từng đoạn, checkpoint tối đa khoảng mỗi 2 giây khi có tiến độ, và lưu ngay khi hoàn tất/hủy/rời Activity. Sau khi tiến trình bị đóng, mở lại video rồi chọn **Dịch lại** để xử lý các đoạn thiếu. Một lần đổi ngôn ngữ chỉ xóa bản dịch cũ khi có kết quả mới đầu tiên, tránh trộn hai ngôn ngữ.
+- Dịch ghi nhận kết quả theo từng đoạn, checkpoint tối đa khoảng mỗi 2 giây khi có tiến độ, và lưu ngay khi hoàn tất/hủy/rời Activity. Sau khi tiến trình bị đóng, mở lại video rồi dùng tùy chọn dịch các đoạn thiếu để tiếp tục. Một lần đổi ngôn ngữ chỉ xóa bản dịch cũ khi có kết quả mới đầu tiên, tránh trộn hai ngôn ngữ.
 - Transcript/bản dịch được lưu trong tệp JSON riêng bằng `AtomicFile`; preferences chỉ giữ metadata/vị trí. Dữ liệu phiên cũ trong preferences vẫn đọc được và được chuyển sang tệp ở lần lưu tiếp theo.
 - Chưa lưu trạng thái nội bộ recognizer Vosk: nếu tiến trình bị đóng/force-stop trong lúc nhận dạng, cần tạo lại transcript từ đầu; transcript hoàn chỉnh trước đó vẫn được giữ. Foreground service giảm nguy cơ gián đoạn nhưng không bảo đảm sống qua force-stop hoặc khởi động lại thiết bị.
 - Android 15+ dùng foreground service loại `mediaProcessing`, các phiên bản trước dùng `dataSync`. Có xử lý timeout hệ thống và giới hạn mỗi phiên dịch vụ tối đa 6 giờ; khi hết hạn, ứng dụng dừng tác vụ và giữ bản dịch đã ghi nhận. Khóa CPU được giải phóng khi dịch vụ dừng.
@@ -59,7 +73,7 @@ APK debug nằm trong `app/build/outputs/apk/<flavor>/debug/`. Trên thiết b�
 - Video từ provider không cung cấp kích thước/ngày sửa: mở lại phải giữ vị trí, transcript và bản dịch. Trường hợp này ứng dụng đọc toàn bộ tệp ở luồng nền để tính SHA-256; video lớn hoặc trên cloud có thể mất thêm thời gian. Thay nội dung ở cùng URI phải vô hiệu hóa phiên cũ.
 - Model có `conf/model.conf` nhưng hỏng dữ liệu: tạo transcript phải thử tải lại một lần. Nếu model mới vẫn không nạp được, báo lỗi và cho phép thử lại; không lặp tải vô hạn. Kiểm tra hủy trong lúc phục hồi.
 - Video có track bắt đầu trễ hoặc timestamp gián đoạn: kiểm tra cả phụ đề xem trước và kết quả cuối sau khoảng gián đoạn. Thời gian từ Vosk được ánh xạ theo timestamp PCM decoder.
-- Khi dịch một số đoạn thất bại: chế độ Bản dịch không hiển thị bản gốc như bản dịch. Danh sách ghi rõ đoạn thiếu kèm bản gốc, nút chuyển ngôn ngữ hiển thị số đoạn thiếu; chọn Dịch lại để hoàn tất.
+- Khi dịch một số đoạn thất bại: chế độ Bản dịch không hiển thị bản gốc như bản dịch. Danh sách ghi rõ đoạn thiếu kèm bản gốc, nút chuyển ngôn ngữ hiển thị số đoạn thiếu; dùng tùy chọn dịch lại hoặc xử lý từng đoạn còn thiếu.
 - `AudioTimestampMapTest` kiểm tra offset, khoảng trống, timestamp lùi và sai số tích lũy; `ContentFingerprintTest` kiểm tra thay đổi cuối tệp và ngắt tính hash; `CueTimelineTest` kiểm tra đoạn thiếu bản dịch.
 
 - Khi chưa có model: bắt đầu tạo transcript, hủy trong lúc tải, rồi tạo lại hoặc mở video khác. Kết quả tác vụ cũ không được cập nhật vào phiên mới; tệp giải nén tạm được dọn dẹp.

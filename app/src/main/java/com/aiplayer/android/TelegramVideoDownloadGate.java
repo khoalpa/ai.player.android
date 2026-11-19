@@ -22,6 +22,11 @@ final class TelegramVideoDownloadGate {
         }
         TelegramMessageReference reference;
         try {
+            VideoSourceResolver.Source source = VideoSourceResolver.classify(postUrl);
+            if (source.kind == VideoSourceResolver.Kind.TELEGRAM_PRIVATE_POST) {
+                session.downloadPrivateMessageVideo(source.url.toExternalForm(), callback);
+                return;
+            }
             reference = TelegramMessageReference.fromUrl(postUrl);
         } catch (Exception exception) {
             callback.finished(null, exception.getMessage());

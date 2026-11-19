@@ -23,6 +23,8 @@ final class TranslationClient {
     interface Callback {
         void onTranslated(int index, String translatedText);
 
+        default void onModelUnavailable() {}
+
         default void onProgress(int completed, int total, int cached, int skipped) {
         }
 
@@ -48,13 +50,14 @@ final class TranslationClient {
     };
     private boolean closed;
 
-    void translateCues(AppSettings settings, List<TranscriptCue> cues, Callback callback) {
+    void translateCues(AppSettings settings, List<TranscriptCue> cues,
+            List<TranscriptCue> languageSample, Callback callback) {
         if (cues.isEmpty()) {
             callback.onFinished(0, "Chưa có transcript để dịch.");
             return;
         }
 
-        resolveSourceLanguage(settings, cues)
+        resolveSourceLanguage(settings, languageSample)
                 .addOnSuccessListener(sourceLanguage -> {
                     if (closed) {
                         return;
@@ -65,11 +68,16 @@ final class TranslationClient {
                         return;
                     }
                     if (sourceLanguage.equals(targetLanguage)) {
+                        int accepted = 0;
                         for (int i = 0; i < cues.size(); i++) {
-                            callback.onTranslated(i, cues.get(i).sourceText);
+                            String source = cues.get(i).sourceText;
+                            if (!normalizeCueText(source).isEmpty()) {
+                                callback.onTranslated(i, source);
+                                accepted++;
+                            }
                         }
-                        callback.onProgress(cues.size(), cues.size(), 0, cues.size());
-                        callback.onFinished(cues.size(), "Nguồn và đích cùng ngôn ngữ, đã giữ nguyên transcript.");
+                        callback.onProgress(cues.size(), cues.size(), 0, accepted);
+                        callback.onFinished(accepted, "Nguồn và đích cùng ngôn ngữ, đã giữ nguyên transcript.");
                         return;
                     }
                     Translator translator = translatorFor(sourceLanguage, targetLanguage);
@@ -77,11 +85,13 @@ final class TranslationClient {
                     DownloadConditions conditions = new DownloadConditions.Builder().build();
                     translator.downloadModelIfNeeded(conditions)
                             .addOnSuccessListener(v -> translateNext(translator, languagePair, cues, callback, new TranslationState(cues.size())))
-                            .addOnFailureListener(ex -> callback.onFinished(
-                                    0,
-                                    "Chưa có model dịch offline " + sourceLanguage + " -> " + targetLanguage
-                                            + ". Hãy kết nối mạng một lần để tải model, sau đó có thể dịch offline."
-                            ));
+                            .addOnFailureListener(ex -> {
+                                if (closed) return;
+                                callback.onModelUnavailable();
+                                callback.onFinished(0,
+                                        "Chưa có model dịch offline " + sourceLanguage + " -> " + targetLanguage
+                                                + ". Hãy kết nối mạng một lần để tải model, sau đó có thể dịch offline.");
+                            });
                 })
                 .addOnFailureListener(ex -> callback.onFinished(0, "Không nhận diện được ngôn ngữ nguồn: " + ex.getMessage()));
     }
@@ -98,7 +108,7 @@ final class TranslationClient {
 
     private Task<String> resolveSourceLanguage(AppSettings settings, List<TranscriptCue> cues) {
         String configured = LanguageUtils.normalizeLanguage(settings.sourceLanguage, "auto");
-        if (!"auto".equals(configured)) {
+        if (!"auto".equals(configured) && TranslateLanguage.fromLanguageTag(configured) != null) {
             return com.google.android.gms.tasks.Tasks.forResult(configured);
         }
         StringBuilder sample = new StringBuilder();
@@ -142,6 +152,11 @@ final class TranslationClient {
             String normalizedText = normalizeCueText(sourceText);
             state.index++;
 
+            if (normalizedText.isEmpty()) {
+                state.failed++;
+                maybeReportProgress(callback, state);
+                continue;
+            }
             if (!shouldTranslateText(normalizedText)) {
                 state.skipped++;
                 callback.onTranslated(index, sourceText);
@@ -160,13 +175,19 @@ final class TranslationClient {
 
             translator.translate(normalizedText)
                     .addOnSuccessListener(text -> {
-                        translationCache.put(cacheKey, text);
-                        state.translated++;
-                        callback.onTranslated(index, text);
+                        if (closed) return;
+                        if (text == null || text.trim().isEmpty()) {
+                            state.failed++;
+                        } else {
+                            translationCache.put(cacheKey, text);
+                            state.translated++;
+                            callback.onTranslated(index, text);
+                        }
                         maybeReportProgress(callback, state);
                         translateNext(translator, languagePair, cues, callback, state);
                     })
                     .addOnFailureListener(ex -> {
+                        if (closed) return;
                         state.failed++;
                         maybeReportProgress(callback, state);
                         translateNext(translator, languagePair, cues, callback, state);
@@ -202,9 +223,6 @@ final class TranslationClient {
     }
 
     private boolean shouldTranslateText(String text) {
-        if (text.isEmpty()) {
-            return false;
-        }
         if (URL_LIKE.matcher(text).matches()) {
             return false;
         }

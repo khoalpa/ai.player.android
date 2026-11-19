@@ -17,6 +17,7 @@ import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
@@ -27,14 +28,23 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.ToLongFunction;
 
 final class PlayerHomeView extends ScrollView {
+    private static final long RESUME_LABEL_MIN_MS = 1000;
+
     private final AppSettings settings;
     private final LinearLayout recent;
+    private final LinearLayout taskSection;
+    private final TextView taskHeading;
+    private final TextView taskTitle, taskDetail;
+    private final Button taskAction;
     private final Consumer<Uri> playRecent;
     private final ExecutorService previews = Executors.newSingleThreadExecutor();
+    private final ExecutorService durations = Executors.newFixedThreadPool(3);
     private final List<Future<?>> previewRequests = new ArrayList<>();
+    private final List<Runnable> recentStatusUpdates = new ArrayList<>();
     private int previewGeneration;
     private boolean closed;
 
@@ -45,7 +55,7 @@ final class PlayerHomeView extends ScrollView {
         this.playRecent = playRecent;
         setVerticalScrollBarEnabled(false);
         LinearLayout content = column();
-        content.setPadding(dp(20), 0, dp(20), dp(20));
+        content.setPadding(dp(20), dp(16), dp(20), dp(20));
         int accent = context.getColorStateList(R.color.primary_button_background).getDefaultColor();
         int accentText = context.getColorStateList(R.color.primary_button_foreground).getDefaultColor();
         int surface = PlayerAppearance.color(context, android.R.attr.colorBackgroundFloating);
@@ -55,7 +65,7 @@ final class PlayerHomeView extends ScrollView {
 
         recent = column();
         LinearLayout.LayoutParams section = new LinearLayout.LayoutParams(-1, -2);
-        section.topMargin = dp(28);
+        section.topMargin = dp(20);
         content.addView(recent, section);
         TextView heading = label(16, true);
         heading.setText("Video gần đây");
@@ -63,34 +73,102 @@ final class PlayerHomeView extends ScrollView {
         recent.addView(heading);
 
         recent.setVisibility(GONE);
+
+        taskSection = column();
+        LinearLayout.LayoutParams taskParams = new LinearLayout.LayoutParams(-1, -2);
+        taskParams.topMargin = dp(20);
+        content.addView(taskSection, taskParams);
+        taskHeading = label(16, true);
+        taskHeading.setText("Tác vụ gần đây");
+        if (Build.VERSION.SDK_INT >= 28) taskHeading.setAccessibilityHeading(true);
+        taskSection.addView(taskHeading);
+        LinearLayout taskCard = column();
+        taskCard.setPadding(dp(14), dp(10), dp(14), dp(10));
+        taskCard.setBackground(shape(surface, dp(14)));
+        LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(-1, -2);
+        cardParams.topMargin = dp(8);
+        taskSection.addView(taskCard, cardParams);
+        taskTitle = label(14, true);
+        taskCard.addView(taskTitle);
+        taskDetail = label(12, false);
+        taskDetail.setMaxLines(2);
+        taskDetail.setEllipsize(TextUtils.TruncateAt.END);
+        taskCard.addView(taskDetail);
+        taskAction = new Button(context);
+        taskAction.setAllCaps(false);
+        taskAction.setTextSize(settings.textSize(14));
+        taskAction.setTextColor(foreground);
+        taskAction.setMinHeight(dp(48));
+        taskAction.setMinimumHeight(dp(48));
+        taskAction.setStateListAnimator(null);
+        taskAction.setBackgroundTintList(null);
+        taskAction.setBackground(ripple(PlayerAppearance.color(context, R.attr.playerSelection), dp(10)));
+        LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(-2, -2);
+        actionParams.topMargin = dp(4);
+        taskCard.addView(taskAction, actionParams);
+        taskSection.setVisibility(GONE);
         addView(content, new FrameLayout.LayoutParams(-1, -2, Gravity.CENTER_HORIZONTAL));
     }
 
-    void bindRecent(List<PlaybackSessionStore.RecentVideo> videos, ToLongFunction<Uri> position) {
+    void bindTask(String title, String detail, String action, Runnable onClick) {
+        taskSection.setVisibility(title == null ? GONE : VISIBLE);
+        taskHeading.setVisibility(onClick == null ? GONE : VISIBLE);
+        taskTitle.setText(title);
+        taskDetail.setText(detail);
+        taskDetail.setVisibility(TextUtils.isEmpty(detail) ? GONE : VISIBLE);
+        taskAction.setText(action);
+        taskAction.setOnClickListener(onClick == null ? null : view -> onClick.run());
+        taskAction.setVisibility(onClick == null ? GONE : VISIBLE);
+    }
+
+    void bindRecent(List<PlaybackSessionStore.RecentVideo> videos, ToLongFunction<Uri> position,
+                    ToLongFunction<Uri> duration,
+                    Function<Uri, RecentVideoStatus> savedStatus,
+                    Function<Uri, RecentVideoStatus> activeStatus) {
         cancelPreviews();
+        recentStatusUpdates.clear();
         recent.removeViews(1, recent.getChildCount() - 1);
         recent.setVisibility(videos.isEmpty() ? GONE : VISIBLE);
         for (PlaybackSessionStore.RecentVideo video : videos) {
-            addRecentCard(video, position.applyAsLong(video.uri));
+            addRecentCard(video, position.applyAsLong(video.uri), duration, savedStatus, activeStatus);
         }
     }
 
-    private void addRecentCard(PlaybackSessionStore.RecentVideo video, long position) {
+    void refreshRecentStatuses() {
+        for (Runnable update : recentStatusUpdates) update.run();
+    }
+
+    private void addRecentCard(PlaybackSessionStore.RecentVideo video, long position,
+                               ToLongFunction<Uri> duration,
+                               Function<Uri, RecentVideoStatus> savedStatus,
+                               Function<Uri, RecentVideoStatus> activeStatus) {
         Context context = getContext();
         int surface = PlayerAppearance.color(context, android.R.attr.colorBackgroundFloating);
         int foreground = context.getColorStateList(R.color.control_icon_foreground).getDefaultColor();
         LinearLayout card = new LinearLayout(context);
         card.setGravity(Gravity.CENTER_VERTICAL);
-        card.setPadding(dp(10), dp(10), dp(10), dp(10));
-        card.setBackground(shape(surface, dp(14)));
+        card.setPadding(dp(10), dp(8), dp(12), dp(8));
+        card.setMinimumHeight(dp(48));
+        card.setBackground(ripple(surface, dp(14)));
+        card.setFocusable(true);
+        card.setOnClickListener(view -> playRecent.accept(video.uri));
         LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(-1, -2);
-        cardParams.topMargin = dp(12);
+        cardParams.topMargin = dp(8);
         recent.addView(card, cardParams);
         ImageView thumbnail = new ImageView(context);
         thumbnail.setBackground(shape(PlayerAppearance.color(context, R.attr.playerSelection), dp(8)));
         thumbnail.setClipToOutline(true);
         thumbnail.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-        card.addView(thumbnail, new LinearLayout.LayoutParams(dp(88), dp(50)));
+        LinearLayout preview = column();
+        card.addView(preview, new LinearLayout.LayoutParams(dp(88), -2));
+        preview.addView(thumbnail, new LinearLayout.LayoutParams(-1, dp(50)));
+        ProgressBar watched = new ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal);
+        watched.setProgressTintList(context.getColorStateList(R.color.primary_button_background));
+        watched.setProgressBackgroundTintList(ColorStateList.valueOf(
+                PlayerAppearance.color(context, R.attr.playerSelection)));
+        watched.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        watched.setVisibility(GONE);
+        preview.addView(watched, new LinearLayout.LayoutParams(-1, dp(3)));
 
         LinearLayout details = column();
         LinearLayout.LayoutParams detailsParams = new LinearLayout.LayoutParams(0, -2, 1);
@@ -98,42 +176,85 @@ final class PlayerHomeView extends ScrollView {
         detailsParams.setMarginEnd(dp(8));
         card.addView(details, detailsParams);
         TextView filename = label(14, true);
-        filename.setSingleLine();
+        filename.setMaxLines(2);
         filename.setEllipsize(TextUtils.TruncateAt.END);
         details.addView(filename, new LinearLayout.LayoutParams(-1, -2));
         TextView timestamp = label(12, false);
-        timestamp.setAlpha(0.75f);
         details.addView(timestamp);
+        TextView processing = label(12, false);
+        processing.setVisibility(GONE);
+        details.addView(processing, new LinearLayout.LayoutParams(-1, -2));
 
-        Button play = new Button(context);
-        play.setMinWidth(0);
-        play.setMinimumWidth(0);
-        play.setStateListAnimator(null);
-        play.setBackgroundTintList(null);
-        play.setBackground(ripple(PlayerAppearance.color(context, R.attr.playerSelection), dp(24)));
-        play.setForeground(context.getDrawable(R.drawable.ic_home_play).mutate());
-        play.getForeground().setTint(foreground);
-        play.setForegroundGravity(Gravity.CENTER);
-        play.setOnClickListener(view -> playRecent.accept(video.uri));
-        card.addView(play, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        ImageView play = new ImageView(context);
+        play.setImageResource(R.drawable.ic_home_play);
+        play.setImageTintList(ColorStateList.valueOf(foreground));
+        play.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        card.addView(play, new LinearLayout.LayoutParams(dp(24), dp(24)));
+        details.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
 
-        String progress = position < 1000 ? "Chưa xem"
+        boolean canResume = position >= RESUME_LABEL_MIN_MS;
+        String progress = !canResume ? "Chưa xem"
                 : "Tiếp tục từ " + SavedVideosDialog.formatPosition(position);
         String name = video.name != null ? video.name : PlaybackSessionStore.fallbackName(video.uri);
-        setRecentTitle(filename, play, name, progress);
+        filename.setText(recentTitle(name));
         timestamp.setText(progress);
+        int muted = processing.getCurrentTextColor();
+        int warning = Color.luminance(surface) > 0.5f ? 0xff805000 : 0xffffbf66;
+        class StatusUpdate implements Runnable {
+            RecentVideoStatus saved;
+
+            @Override public void run() {
+                RecentVideoStatus status = activeStatus.apply(video.uri);
+                if (status == null) status = saved;
+                processing.setVisibility(status == null ? GONE : VISIBLE);
+                String label = status == null ? "" : status.text;
+                if (!TextUtils.equals(processing.getText(), label)) processing.setText(label);
+                int color = status != null && status.warning ? warning : muted;
+                if (processing.getCurrentTextColor() != color) processing.setTextColor(color);
+                card.setContentDescription("Phát " + filename.getText() + ", " + timestamp.getText()
+                        + (status == null ? "" : ", " + status.text));
+            }
+        }
+        StatusUpdate statusUpdate = new StatusUpdate();
+        recentStatusUpdates.add(statusUpdate);
+        statusUpdate.run();
 
         thumbnail.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
         thumbnail.setImageResource(R.drawable.ic_control_library);
         int generation = previewGeneration;
+        previewRequests.add(durations.submit(() -> {
+            long durationMs = duration.applyAsLong(video.uri);
+            if (durationMs <= 0) return;
+            ((android.app.Activity) context).runOnUiThread(() -> {
+                if (closed || generation != previewGeneration) return;
+                timestamp.setText(progress + (canResume ? " / " : " · ")
+                        + SavedVideosDialog.formatPosition(durationMs));
+                if (canResume) {
+                    watched.setMax(1000);
+                    watched.setProgress((int) Math.round(1000.0 * Math.min(position, durationMs) / durationMs));
+                    watched.setVisibility(VISIBLE);
+                }
+                statusUpdate.run();
+            });
+        }));
+        previewRequests.add(previews.submit(() -> {
+            RecentVideoStatus saved = savedStatus.apply(video.uri);
+            ((android.app.Activity) context).runOnUiThread(() -> {
+                if (closed || generation != previewGeneration) return;
+                statusUpdate.saved = saved;
+                statusUpdate.run();
+            });
+        }));
         previewRequests.add(previews.submit(() -> {
             String resolvedName = video.name == null
                     ? PlaybackSessionStore.displayName(context, video.uri, null) : null;
             Bitmap frame = readFrame(video.uri);
-            if (frame == null && resolvedName == null) return;
             ((android.app.Activity) context).runOnUiThread(() -> {
                 if (closed || generation != previewGeneration) return;
-                if (resolvedName != null) setRecentTitle(filename, play, resolvedName, progress);
+                if (resolvedName != null) {
+                    filename.setText(recentTitle(resolvedName));
+                    statusUpdate.run();
+                }
                 if (frame != null) {
                     thumbnail.setScaleType(ImageView.ScaleType.CENTER_CROP);
                     thumbnail.setImageBitmap(frame);
@@ -142,17 +263,13 @@ final class PlayerHomeView extends ScrollView {
         }));
     }
 
-    private static void setRecentTitle(TextView filename, Button play, String name, String progress) {
-        String title = TextUtils.isEmpty(name) ? "Video" : name.replaceAll("\\s+", " ");
-        filename.setText(title);
-        play.setContentDescription("Phát " + title + ", " + progress);
+    private static String recentTitle(String name) {
+        return TextUtils.isEmpty(name) ? "Video" : name.replaceAll("\\s+", " ");
     }
 
     @Override protected void onMeasure(int widthSpec, int heightSpec) {
         View content = getChildAt(0);
         content.getLayoutParams().width = Math.min(MeasureSpec.getSize(widthSpec), dp(540));
-        int top = Math.min(dp(100), Math.max(dp(12), MeasureSpec.getSize(heightSpec) / 7));
-        if (getPaddingTop() != top) setPadding(0, top, 0, 0);
         super.onMeasure(widthSpec, heightSpec);
     }
 
@@ -189,6 +306,7 @@ final class PlayerHomeView extends ScrollView {
         closed = true;
         cancelPreviews();
         previews.shutdownNow();
+        durations.shutdownNow();
     }
 
     private void addAction(LinearLayout parent, String text, int icon, int fill, int foreground,
@@ -223,6 +341,8 @@ final class PlayerHomeView extends ScrollView {
     private TextView label(int size, boolean bold) {
         TextView text = new TextView(getContext());
         text.setTextSize(settings.textSize(size));
+        text.setTextColor(PlayerAppearance.color(getContext(), bold
+                ? android.R.attr.textColorPrimary : android.R.attr.textColorSecondary));
         if (bold) text.setTypeface(null, Typeface.BOLD);
         return text;
     }

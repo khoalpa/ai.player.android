@@ -17,13 +17,15 @@ import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 final class VideoDownloadFlow {
-    private final MainActivity activity;
-    private final AppSettings settings;
+    private final Context context;
+    private MainActivity activity;
+    private AppSettings settings;
     private final SavedVideoStore store;
-    private final Supplier<TelegramSessionClient> telegram;
-    private final Runnable login;
-    private final Consumer<URL> openTelegram;
-    private final Consumer<File> openVideo;
+    private Supplier<TelegramSessionClient> telegram;
+    private Runnable login;
+    private Consumer<URL> openTelegram;
+    private Consumer<File> openVideo;
+    private Runnable onTransferChanged;
     private AlertDialog dialog;
     private String address = "";
     private Transfer active;
@@ -34,16 +36,40 @@ final class VideoDownloadFlow {
     private String error;
     private File completed;
 
-    VideoDownloadFlow(MainActivity activity, AppSettings settings, SavedVideoStore store,
-                      Supplier<TelegramSessionClient> telegram, Runnable login,
-                      Consumer<URL> openTelegram, Consumer<File> openVideo) {
+    VideoDownloadFlow(Context context, SavedVideoStore store) {
+        this.context = context.getApplicationContext();
+        this.store = store;
+    }
+
+    void attach(MainActivity activity, AppSettings settings, Supplier<TelegramSessionClient> telegram,
+                Runnable login, Consumer<URL> openTelegram, Consumer<File> openVideo, Runnable onTransferChanged) {
         this.activity = activity;
         this.settings = settings;
-        this.store = store;
         this.telegram = telegram;
         this.login = login;
         this.openTelegram = openTelegram;
         this.openVideo = openVideo;
+        this.onTransferChanged = onTransferChanged;
+    }
+
+    boolean isDownloading() { return active != null; }
+
+    boolean usesTelegramSession(TelegramSessionClient client) {
+        return client != null && active != null && active.client == client;
+    }
+
+    String activeTitle() {
+        if (active.title != null) return active.title;
+        if (active.source.kind == VideoSourceResolver.Kind.TELEGRAM_PUBLIC_POST) {
+            return "@" + active.source.channel + " · " + active.source.postId;
+        }
+        if (active.source.kind == VideoSourceResolver.Kind.TELEGRAM_PRIVATE_POST) return "Video Telegram";
+        String name = SavedVideoStore.nameFromUrl(active.source.url.toExternalForm());
+        return TextUtils.isEmpty(name) ? active.source.url.getHost() : name;
+    }
+
+    String activeLabel() {
+        return active.percent < 0 ? "Đang tải video…" : "Đang tải video · " + active.percent + "%";
     }
 
     void show() {
@@ -62,7 +88,7 @@ final class VideoDownloadFlow {
         EditText field = new EditText(activity);
         field.setSingleLine(true);
         field.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-        field.setHint("https://example.com/video.mp4 hoặc t.me/channel/123");
+        field.setHint("https://example.com/video.mp4");
         field.setText(address);
         form.addView(field);
         TextView sourceLabel = new TextView(activity);
@@ -95,7 +121,7 @@ final class VideoDownloadFlow {
             @Override public void afterTextChanged(android.text.Editable value) {}
         });
         updateSourceLabel(sourceLabel);
-        if (failedSource != null && failedSource.kind == VideoSourceResolver.Kind.TELEGRAM_PUBLIC_POST) {
+        if (failedSource != null && isTelegram(failedSource)) {
             if (failedViaAccount && allowPublicFallback) {
                 addAction(actions, "Thử bản công khai", () -> {
                     VideoSourceResolver.Source source = failedSource;
@@ -128,10 +154,18 @@ final class VideoDownloadFlow {
             try {
                 VideoSourceResolver.Source source = VideoSourceResolver.classify(address);
                 if (source.kind == VideoSourceResolver.Kind.UNSUPPORTED_PAGE) {
-                    problem.setText("Hãy dùng link bài đăng kênh Telegram công khai hoặc chia sẻ tệp từ Telegram.");
+                    problem.setText("Hãy dùng liên kết bài đăng Telegram hoặc chia sẻ tệp từ Telegram.");
                     return;
                 }
-                begin(source, connected() && (failedSource == null || failedViaAccount));
+                if (source.kind == VideoSourceResolver.Kind.TELEGRAM_PRIVATE_POST && !connected()) {
+                    failedSource = source;
+                    error = "Cần đăng nhập Telegram bằng tài khoản có quyền truy cập bài đăng này.";
+                    dismiss();
+                    showInput();
+                    return;
+                }
+                begin(source, connected() && (source.kind == VideoSourceResolver.Kind.TELEGRAM_PRIVATE_POST
+                        || failedSource == null || failedViaAccount));
             } catch (Exception invalid) {
                 problem.setText("Hãy nhập link video HTTPS hoặc link bài đăng Telegram hợp lệ.");
             }
@@ -151,11 +185,19 @@ final class VideoDownloadFlow {
     private void updateSourceLabel(TextView label) {
         try {
             VideoSourceResolver.Kind kind = VideoSourceResolver.classify(address).kind;
-            label.setText(kind == VideoSourceResolver.Kind.TELEGRAM_PUBLIC_POST ? "Nguồn Telegram"
-                    : kind == VideoSourceResolver.Kind.DIRECT_FILE ? "Nguồn URL" : "");
+            if (kind == VideoSourceResolver.Kind.TELEGRAM_PRIVATE_POST) {
+                label.setText("Bài đăng Telegram riêng tư · Cần đăng nhập bằng tài khoản có quyền truy cập.");
+                return;
+            }
         } catch (Exception invalid) {
-            label.setText("");
+            // Keep the supported-source hint while the address is incomplete.
         }
+        label.setText("Hỗ trợ URL video trực tiếp và bài đăng Telegram.");
+    }
+
+    private static boolean isTelegram(VideoSourceResolver.Source source) {
+        return source.kind == VideoSourceResolver.Kind.TELEGRAM_PUBLIC_POST
+                || source.kind == VideoSourceResolver.Kind.TELEGRAM_PRIVATE_POST;
     }
 
     private boolean connected() {
@@ -181,13 +223,14 @@ final class VideoDownloadFlow {
                     .setPositiveButton("Mở video", (d, w) -> openVideo.accept(existing)).create());
             return;
         }
-        boolean telegramSource = key != null;
+        boolean telegramSource = isTelegram(source);
         Transfer transfer = new Transfer(source, telegramSource && account);
         active = transfer;
         transfer.status = telegramSource
                 ? (transfer.viaAccount ? "Đang tải bằng tài khoản Telegram…" : "Đang tìm video công khai…")
                 : "Đang kết nối…";
         showProgress();
+        onTransferChanged.run();
         if (!telegramSource) {
             download(transfer, source.url.toExternalForm());
         } else if (transfer.viaAccount) {
@@ -196,21 +239,22 @@ final class VideoDownloadFlow {
                 @Override public void finished(String path, String failure) {
                     if (active != transfer) return;
                     if (failure != null) {
-                        boolean fallback = !failure.startsWith("Bài đăng hạn chế")
+                        boolean fallback = source.kind == VideoSourceResolver.Kind.TELEGRAM_PUBLIC_POST
+                                && !failure.startsWith("Bài đăng hạn chế")
                                 && !failure.startsWith("Không xác nhận được quyền lưu");
                         fail(transfer, failure, fallback);
                         return;
                     }
-                    updateProgress(transfer, "Đang lưu video Telegram…");
                     transfer.title = new File(path).getName();
-                    new TdlibSavedVideoImporter(activity).importFile(path, () -> transfer.cancelled,
+                    updateProgress(transfer, "Đang lưu video Telegram…");
+                    new TdlibSavedVideoImporter(context).importFile(path, () -> transfer.cancelled,
                             (file, problem) -> finish(transfer, file, problem, null));
                 }
 
                 @Override public boolean isCancelled() { return transfer.cancelled; }
 
                 @Override public void progress(long bytes, long total) {
-                    updateProgress(transfer, progressText(bytes, total));
+                    updateBytes(transfer, bytes, total);
                 }
             };
             new TelegramVideoDownloadGate(transfer.client).download(source.url.toExternalForm(),
@@ -230,14 +274,16 @@ final class VideoDownloadFlow {
 
     private void download(Transfer transfer, String url) {
         SavedVideoStore.Download download = store.download(url,
-                (bytes, total) -> updateProgress(transfer, progressText(bytes, total)),
+                (bytes, total) -> updateBytes(transfer, bytes, total),
                 (file, failure) -> finish(transfer, file, failure, url));
         transfer.cancelRequest = download::cancel;
     }
 
-    private String progressText(long bytes, long total) {
-        String size = android.text.format.Formatter.formatShortFileSize(activity, bytes);
-        return "Đã tải " + (total > 0 ? (bytes * 100 / total) + "% · " : "") + size;
+    private void updateBytes(Transfer transfer, long bytes, long total) {
+        transfer.percent = total > 0 ? (int) Math.min(100, 100.0 * bytes / total) : -1;
+        String size = android.text.format.Formatter.formatShortFileSize(context, bytes);
+        updateProgress(transfer, "Đã tải "
+                + (transfer.percent >= 0 ? transfer.percent + "% · " : "") + size);
     }
 
     private void showProgress() {
@@ -251,6 +297,7 @@ final class VideoDownloadFlow {
         if (active != transfer) return;
         transfer.status = status;
         if (visible()) dialog.setMessage(status);
+        notifyTransferChanged();
     }
 
     private void finish(Transfer transfer, File file, Exception failure, String mediaUrl) {
@@ -264,12 +311,14 @@ final class VideoDownloadFlow {
         }
         active = null;
         String key = SavedVideoStore.telegramKey(transfer.source);
-        store.remember(file, key == null ? "URL" : "Telegram", key,
-                key == null ? SavedVideoStore.nameFromUrl(mediaUrl) : transfer.title != null ? transfer.title
-                        : "@" + transfer.source.channel + " · " + transfer.source.postId);
+        boolean telegramSource = isTelegram(transfer.source);
+        String title = telegramSource ? transfer.title : SavedVideoStore.nameFromUrl(mediaUrl);
+        if (telegramSource && title == null) title = "@" + transfer.source.channel + " · " + transfer.source.postId;
+        store.remember(file, telegramSource ? "Telegram" : "URL", key, title);
         completed = file;
+        notifyTransferChanged();
         if (visible()) showCompleted();
-        else android.widget.Toast.makeText(activity, "Đã lưu video", android.widget.Toast.LENGTH_SHORT).show();
+        else android.widget.Toast.makeText(context, "Đã lưu video", android.widget.Toast.LENGTH_SHORT).show();
     }
 
     private static String errorMessage(Exception error) {
@@ -286,6 +335,7 @@ final class VideoDownloadFlow {
         failedViaAccount = transfer.viaAccount;
         allowPublicFallback = fallback;
         error = message;
+        notifyTransferChanged();
         if (visible()) {
             dismiss();
             showInput();
@@ -334,10 +384,26 @@ final class VideoDownloadFlow {
         transfer.cancelled = true;
         if (transfer.cancelRequest != null) transfer.cancelRequest.run();
         if (transfer.client != null) transfer.client.cancelMessageVideo(transfer.telegramResult);
+        notifyTransferChanged();
+    }
+
+    private void notifyTransferChanged() {
+        if (onTransferChanged != null) onTransferChanged.run();
+    }
+
+    void detach() {
+        dismiss();
+        activity = null;
+        settings = null;
+        telegram = null;
+        login = null;
+        openTelegram = null;
+        openVideo = null;
+        onTransferChanged = null;
     }
 
     void close() {
-        dismiss();
+        detach();
         cancel();
     }
 
@@ -346,6 +412,7 @@ final class VideoDownloadFlow {
         final boolean viaAccount;
         String status;
         String title;
+        int percent = -1;
         volatile boolean cancelled;
         Runnable cancelRequest;
         TelegramSessionClient client;

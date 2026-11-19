@@ -8,6 +8,7 @@ public class TelegramVideoDownloadGateTest {
         boolean nativeLoaded;
         TelegramAuthorizationFlow.State state = TelegramAuthorizationFlow.State.UNAVAILABLE;
         String requestedChannel;
+        String requestedPrivateLink;
         long requestedId;
         @Override public boolean isNativeAvailable() { return nativeLoaded; }
         @Override public TelegramAuthorizationFlow.State authorizationState() { return state; }
@@ -21,6 +22,10 @@ public class TelegramVideoDownloadGateTest {
             callback.finished("/private/video.mp4", null);
         }
         @Override public void logoutAndClearSession(Completion callback) { callback.finished(null); }
+        @Override public void downloadPrivateMessageVideo(String postUrl, MessageVideoResult callback) {
+            requestedPrivateLink = postUrl;
+            callback.finished("/private/video.mp4", null);
+        }
     }
 
     @Test public void refusesMissingNativeOrUnauthorizedSession() {
@@ -48,16 +53,30 @@ public class TelegramVideoDownloadGateTest {
         session.nativeLoaded = true;
         session.state = TelegramAuthorizationFlow.State.READY;
         TelegramVideoDownloadGate gate = new TelegramVideoDownloadGate(session);
-        gate.download("https://t.me/c/123/456", (file, error) -> {
-            assertNull(file);
-            assertNotNull(error);
-        });
-        assertNull(session.requestedChannel);
         gate.download("https://t.me/xdcmdj/3076", (file, error) -> {
             assertNull(error);
             assertEquals("/private/video.mp4", file);
         });
         assertEquals("xdcmdj", session.requestedChannel);
         assertEquals(3076L, session.requestedId);
+    }
+
+    @Test public void routesPrivateLinksOnlyAfterAuthorization() {
+        FakeSession session = new FakeSession();
+        session.nativeLoaded = true;
+        session.state = TelegramAuthorizationFlow.State.CODE_REQUIRED;
+        TelegramVideoDownloadGate gate = new TelegramVideoDownloadGate(session);
+        gate.download("t.me/c/123/456", (file, error) -> {
+            assertNull(file);
+            assertNotNull(error);
+        });
+        assertNull(session.requestedPrivateLink);
+        session.state = TelegramAuthorizationFlow.State.READY;
+        gate.download("t.me/c/123/456", (file, error) -> {
+            assertNull(error);
+            assertEquals("/private/video.mp4", file);
+        });
+        assertEquals("https://t.me/c/123/456", session.requestedPrivateLink);
+        assertNull(session.requestedChannel);
     }
 }

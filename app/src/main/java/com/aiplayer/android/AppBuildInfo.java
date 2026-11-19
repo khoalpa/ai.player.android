@@ -9,11 +9,15 @@ import android.os.Build;
 
 final class AppBuildInfo {
     final String summary;
-    final String details;
+    final String versionSummary;
+    final String packageName;
+    final String variant;
+    final String shortCommit;
+    final String sourceState;
     private final String clipboardText;
 
     AppBuildInfo(Activity activity) {
-        String packageName = activity.getPackageName();
+        packageName = activity.getPackageName();
         String version = BuildConfig.VERSION_NAME;
         long build = BuildConfig.VERSION_CODE;
         try {
@@ -23,12 +27,11 @@ final class AppBuildInfo {
         } catch (PackageManager.NameNotFoundException ignored) {
             // Use the build metadata if package inspection is unavailable.
         }
-        String variant = BuildConfig.DISTRIBUTION_FLAVOR.isEmpty() ? BuildConfig.BUILD_TYPE
+        variant = BuildConfig.DISTRIBUTION_FLAVOR.isEmpty() ? BuildConfig.BUILD_TYPE
                 : BuildConfig.DISTRIBUTION_FLAVOR + " / " + BuildConfig.BUILD_TYPE;
         String commit = BuildConfig.GIT_COMMIT;
         String fullCommit = commit.isEmpty() ? "Không xác định" : commit;
-        String shortCommit = commit.isEmpty() ? fullCommit : commit.substring(0, Math.min(12, commit.length()));
-        String sourceState;
+        shortCommit = commit.isEmpty() ? fullCommit : commit.substring(0, Math.min(12, commit.length()));
         switch (BuildConfig.GIT_WORKTREE) {
             case "dirty": sourceState = "Có thay đổi cục bộ"; break;
             case "clean": sourceState = "Khớp với commit"; break;
@@ -38,7 +41,7 @@ final class AppBuildInfo {
                 + "\nGói Android: " + packageName + "\nBiến thể: " + variant;
         String state = "\nMã nguồn: " + sourceState;
         summary = version + (commit.isEmpty() ? "" : " · " + shortCommit);
-        details = info + "\nCommit: " + shortCommit + state;
+        versionSummary = "Phiên bản " + version + " · Bản dựng " + build;
         clipboardText = "AI Player\n" + info + "\nCommit: " + fullCommit + state;
     }
 

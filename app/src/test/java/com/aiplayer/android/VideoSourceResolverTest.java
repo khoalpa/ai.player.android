@@ -28,9 +28,14 @@ public class VideoSourceResolverTest {
         assertThrows(java.net.MalformedURLException.class,
                 () -> VideoSourceResolver.classify("t.me.example.com/xdcmdj/3076"));
     }
-    @Test public void doesNotClassifyPrivateTelegramLinks() throws Exception {
+    @Test public void classifiesPrivateTelegramLinksWithoutPublicPreview() throws Exception {
+        for (String link : new String[]{"https://t.me/c/123456/3076", "t.me/c/123456/42/3076?single"}) {
+            VideoSourceResolver.Source source = VideoSourceResolver.classify(link);
+            assertEquals(VideoSourceResolver.Kind.TELEGRAM_PRIVATE_POST, source.kind);
+            assertThrows(IllegalArgumentException.class, () -> VideoSourceResolver.publicTelegramEmbed(source));
+        }
         assertEquals(VideoSourceResolver.Kind.UNSUPPORTED_PAGE,
-                VideoSourceResolver.classify("https://t.me/c/123456/3076").kind);
+                VideoSourceResolver.classify("https://t.me/c/123456").kind);
     }
     @Test public void rejectsFakeTelegramDomain() throws Exception {
         assertEquals(VideoSourceResolver.Kind.DIRECT_FILE,

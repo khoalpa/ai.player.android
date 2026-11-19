@@ -50,6 +50,28 @@ final class VideoSession {
     private ReadCancellation fileCancellation;
     private int videoRevision;
     private long transcriptVersion;
+    private long recentSummaryVersion = -1;
+    private RecentVideoStatus.Summary recentSummary;
+    private String repairTarget;
+    private String failedTarget;
+    boolean translationModelUnavailable;
+    enum Task {
+        TRANSCRIPT("Đang tạo transcript…", "Transcript đã sẵn sàng"),
+        TRANSLATION("Đang dịch…", "Bản dịch đã sẵn sàng");
+
+        final String runningLabel;
+        final String readyLabel;
+
+        Task(String runningLabel, String readyLabel) {
+            this.runningLabel = runningLabel;
+            this.readyLabel = readyLabel;
+        }
+    }
+
+    Task runningTask;
+    Task finishedTask;
+    private Task failedTask;
+    private String translationTaskTarget;
     private List<TranscriptCue> previousCues;
     private String previousSourceLanguage;
     private String previousTargetLanguage;
@@ -71,8 +93,24 @@ final class VideoSession {
         cache = new TranscriptCache(context);
     }
 
+    long transcriptCacheBytes(boolean clear) {
+        return cache.cacheBytes(clear);
+    }
+
+    void removeCachedTranscript(String identity, String source, Runnable completed) {
+        files.execute(() -> {
+            cache.removeFor(identity, source);
+            main.post(completed);
+        });
+    }
+
     void open(Uri uri, String language, PlaybackSessionStore.Snapshot restored) {
+        repairTarget = null;
+        failedTarget = null;
+        translationModelUnavailable = false;
         cancel();
+        failedTask = null;
+        translationTaskTarget = null;
         video = uri;
         videoIdentity = restored == null ? null : restored.identity;
         videoName = restored == null ? "Video" : restored.name;
@@ -87,9 +125,12 @@ final class VideoSession {
             cues.addAll(restored.cues);
             sourceLanguage = restored.source;
             targetLanguage = restored.target;
+            repairTarget = restored.repairTarget;
+            failedTask = restored.failedTask;
+            failedTarget = restored.failedTarget;
         }
         timeline.rebuild();
-        boolean loadCache = cues.isEmpty();
+        boolean loadCache = cues.isEmpty() && (restored == null || !restored.suppressCache);
         String identity = videoIdentity;
         pendingFile = files.submit(() -> scanTracks(uri, opened, request, language, loadCache, identity));
         changed.accept("Đang kiểm tra track âm thanh…");
@@ -143,6 +184,7 @@ final class VideoSession {
         cancel();
         int request = revision;
         busy = true;
+        runningTask = Task.TRANSCRIPT;
         changed.accept("Đang chuẩn bị nhận dạng…");
         if (request != revision) return;
         Uri input = video;
@@ -196,6 +238,7 @@ final class VideoSession {
                     if (isCancelled()) return;
                     if (result.isEmpty()) restorePreviousTranscript();
                     previousCues = null;
+                    if (!result.isEmpty()) finishedTask = Task.TRANSCRIPT;
                     finishTranscript(request, result, language, status);
                     if (key != null && !result.isEmpty()) {
                         files.execute(() -> cache.write(key, track.index, result));
@@ -247,7 +290,14 @@ final class VideoSession {
 
     private void finishTranscript(int request, List<TranscriptCue> result, String language, String status) {
         if (request != revision) return;
+        boolean attempted = runningTask == Task.TRANSCRIPT;
         busy = false;
+        runningTask = null;
+        if (attempted) {
+            failedTask = result.isEmpty() ? Task.TRANSCRIPT : null;
+            failedTarget = null;
+            transcriptVersion++;
+        }
         if (!result.isEmpty()) {
             transcriptVersion++;
             cues.clear();
@@ -256,6 +306,11 @@ final class VideoSession {
             timeline.rebuild();
             sourceLanguage = language;
             targetLanguage = null;
+            repairTarget = null;
+            if (!attempted && failedTask == Task.TRANSLATION) {
+                failedTask = null;
+                failedTarget = null;
+            }
         }
         changed.accept(status);
     }
@@ -266,6 +321,9 @@ final class VideoSession {
 
     Uri videoUri() { return video; }
     String identity() { return videoIdentity; }
+    String translationRepairTarget() { return repairTarget; }
+    Task failedTask() { return failedTask; }
+    String failedTarget() { return failedTarget; }
 
     List<TranscriptCue> completedCues() {
         return previousCues == null ? cues : previousCues;
@@ -279,6 +337,21 @@ final class VideoSession {
         return previousCues == null ? targetLanguage : previousTargetLanguage;
     }
 
+    RecentVideoStatus recentStatus(String target) {
+        if (runningTask == Task.TRANSCRIPT) {
+            return new RecentVideoStatus("Đang tạo transcript…", false);
+        }
+        boolean sameTarget = target.equals(translationTaskTarget);
+        if (runningTask == Task.TRANSLATION && sameTarget) {
+            return new RecentVideoStatus("Có transcript · Đang dịch…", false);
+        }
+        if (recentSummaryVersion != transcriptVersion) {
+            recentSummary = new RecentVideoStatus.Summary(completedCues(), completedTarget());
+            recentSummaryVersion = transcriptVersion;
+        }
+        return recentSummary.statusFor(target, failedTask, failedTarget);
+    }
+
     int missingTranslations() {
         if (targetLanguage == null) return 0;
         int missing = 0;
@@ -288,7 +361,29 @@ final class VideoSession {
         return missing;
     }
 
-    void translate(String target) {
+    boolean needsTranslationRepair() {
+        return repairTarget != null && repairTarget.equals(targetLanguage) && missingTranslations() > 0;
+    }
+
+    void translate(String target, String configuredSource) {
+        translate(target, configuredSource, null);
+    }
+
+    void repairTranslation(TranscriptCue cue, String text, String source) {
+        if (busy || targetLanguage == null || !cues.contains(cue) || cue.hasTranslation()
+                || text.trim().isEmpty()) return;
+        if (OfflineModels.pending(models.translation)) {
+            changed.accept("Đang quản lý model dịch. Hãy đợi thao tác hoàn tất.");
+            return;
+        }
+        if (!text.equals(cue.sourceText)) {
+            cue.sourceText = text;
+            transcriptVersion++;
+        }
+        translate(targetLanguage, source, cue);
+    }
+
+    private void translate(String target, String configuredSource, TranscriptCue selected) {
         if (OfflineModels.pending(models.translation)) {
             changed.accept("Đang quản lý model dịch. Hãy đợi thao tác hoàn tất.");
             return;
@@ -297,10 +392,15 @@ final class VideoSession {
         int request = revision;
         busy = true;
         AppSettings settings = new AppSettings();
-        settings.sourceLanguage = sourceLanguage;
+        settings.sourceLanguage = LanguageUtils.normalizeLanguage(configuredSource, "auto");
+        if ("auto".equals(settings.sourceLanguage)) settings.sourceLanguage = sourceLanguage;
         settings.targetLanguage = target;
 
-        TranslationBatch batch = new TranslationBatch(cues, targetLanguage, target);
+        int missingBefore = missingTranslations();
+        int translatedBefore = RecentVideoStatus.translatedCount(cues, targetLanguage, target);
+        boolean retry = target.equals(targetLanguage) && missingBefore > 0;
+        translationModelUnavailable = false;
+        TranslationBatch batch = new TranslationBatch(cues, targetLanguage, target, selected);
         List<TranscriptCue> input = batch.input;
         if (input.isEmpty()) {
             busy = false;
@@ -308,12 +408,20 @@ final class VideoSession {
             return;
         }
         translator = new TranslationClient();
+        runningTask = Task.TRANSLATION;
+        translationTaskTarget = target;
         changed.accept("Đang chuẩn bị model dịch…");
         if (request != revision) return;
-        translator.translateCues(settings, input, new TranslationClient.Callback() {
+        translator.translateCues(settings, input, cues, new TranslationClient.Callback() {
+            @Override
+            public void onModelUnavailable() {
+                if (request == revision) translationModelUnavailable = true;
+            }
+
             @Override
             public void onTranslated(int index, String text) {
-                if (request != revision) return;
+                if (request != revision || text == null || text.trim().isEmpty()) return;
+                if (!target.equals(targetLanguage)) repairTarget = null;
                 batch.accept(index, text);
                 targetLanguage = target;
                 transcriptVersion++;
@@ -333,6 +441,25 @@ final class VideoSession {
                 translator.close();
                 translator = null;
                 busy = false;
+                runningTask = null;
+                boolean complete = target.equals(targetLanguage) && missingTranslations() == 0;
+                int translated = RecentVideoStatus.translatedCount(cues, targetLanguage, target);
+                if (translated == translatedBefore && !complete) {
+                    failedTask = Task.TRANSLATION;
+                    failedTarget = target;
+                } else if (complete || (failedTask == Task.TRANSLATION && target.equals(failedTarget))) {
+                    failedTask = null;
+                    failedTarget = null;
+                }
+                if (retry && missingTranslations() >= missingBefore) {
+                    repairTarget = target;
+                } else if (complete) {
+                    repairTarget = null;
+                }
+                transcriptVersion++;
+                if (count > 0 && complete) {
+                    finishedTask = Task.TRANSLATION;
+                }
                 changed.accept(status);
             }
         });
@@ -357,6 +484,7 @@ final class VideoSession {
         progressTotal = 0;
         progressCompleted = 0;
         busy = false;
+        runningTask = null;
         if (translator != null) {
             translator.close();
             translator = null;
