@@ -2,6 +2,24 @@
 
 AI Player phát video bằng Media3, tạo transcript từ lời thoại bằng Vosk, dịch trên thiết bị bằng ML Kit và phát âm phụ đề bằng TextToSpeech của Android.
 
+## Cài đặt từ GitHub
+
+Cần thiết bị chạy Android 8.0 (API 26) trở lên.
+
+1. Đăng nhập GitHub và mở workflow [Android build](https://github.com/khoalpa/ai.player.android/actions/workflows/android-build.yml).
+2. Chọn lần chạy thành công mới nhất của nhánh `main` hoặc lần chạy ứng với commit bạn muốn thử. Ở cuối trang **Summary**, tải artifact **ai-player-debug-apk** trong mục **Artifacts**. Artifact được giữ 14 ngày. Nếu đã hết hạn, chọn lần chạy thành công còn artifact hoặc tự build theo hướng dẫn bên dưới.
+3. Giải nén tệp ZIP và lấy `app-standalone-debug.apk`. Đây là bản debug cài trực tiếp để dùng thử.
+4. Chuyển APK sang điện thoại nếu tải trên máy tính. Mở APK trên điện thoại, cấp quyền **Cài đặt ứng dụng không rõ nguồn gốc** cho trình duyệt hoặc trình quản lý tệp đang mở APK khi Android yêu cầu, rồi chọn **Cài đặt**.
+
+Nếu dùng ADB, bật **Gỡ lỗi USB**, kết nối điện thoại và chạy lệnh sau từ thư mục chứa APK.
+
+```powershell
+adb devices
+adb install -r .\app-standalone-debug.apk
+```
+
+Nếu gặp `INSTALL_FAILED_UPDATE_INCOMPATIBLE`, APK đang cài và APK mới có chữ ký khác nhau. Dùng APK có cùng chữ ký để cập nhật và giữ dữ liệu. Nếu cần gỡ bản cũ trước khi cài, hãy lưu lại dữ liệu cần giữ vì thao tác gỡ sẽ xóa dữ liệu riêng của ứng dụng.
+
 ## Mở và lưu video
 
 - **Mở video → Chọn tệp trên thiết bị** để phát tệp cục bộ. Màn hình khởi động hiển thị tối đa ba video gần đây và cho phép mở lại tại vị trí đã lưu.
@@ -20,6 +38,13 @@ AI Player phát video bằng Media3, tạo transcript từ lời thoại bằng 
 Có thể đóng gói model nhận dạng Vosk vào APK theo [hướng dẫn model Vosk](app/src/main/assets/README-vosk-models.txt).
 
 ## Build và kiểm thử
+
+Để tự build từ GitHub, tải mã nguồn bằng Git.
+
+```powershell
+git clone https://github.com/khoalpa/ai.player.android.git
+cd ai.player.android
+```
 
 Cần JDK 21, Android SDK 36 và thiết bị hoặc máy ảo Android 8.0 (API 26) trở lên. Trong Android Studio, chọn JDK 21 cho Gradle, mở thư mục gốc dự án, chọn `standaloneDebug` hoặc `playDebug` trong **Build Variants**, rồi chọn thiết bị và bấm **Run**.
 
