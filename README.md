@@ -6,6 +6,25 @@ AI Player phát video bằng Media3, tạo transcript từ lời thoại bằng 
 
 Cần thiết bị chạy Android 8.0 (API 26) trở lên.
 
+### Cài bản standalone release đã ký
+
+1. Mở [GitHub Releases](https://github.com/khoalpa/ai.player.android/releases), chọn bản phát hành và tải `app-standalone-release.apk` trong mục **Assets**. Nếu chưa có APK trên Releases và bạn đã build bản đã ký bằng Android Studio, dùng tệp `app/standalone/release/app-standalone-release.apk` trong dự án hoặc đường dẫn xuất đã chọn khi build.
+2. Nếu tải trên máy tính, chép APK sang điện thoại. Mở tệp APK bằng trình quản lý tệp hoặc từ mục tải xuống của trình duyệt.
+3. Khi Android hỏi quyền, bật **Cho phép từ nguồn này** cho ứng dụng đang mở APK. Quay lại màn hình cài đặt, chọn **Cài đặt**, rồi chọn **Mở** để chạy AI Player.
+
+Để cài từ máy tính qua ADB, bật **Gỡ lỗi USB** trên điện thoại, kết nối cáp USB và chấp nhận yêu cầu xác thực. Mở PowerShell tại thư mục chứa APK rồi chạy:
+
+```powershell
+adb devices
+adb install -r .\app-standalone-release.apk
+```
+
+Kiểm tra thiết bị hiện trạng thái `device` và lệnh cài trả về `Success`. Khi cập nhật tại chỗ, APK cần có chữ ký tương thích với bản đang cài và mã phiên bản bằng hoặc cao hơn. Nếu bản đang cài dùng khóa debug, xem cách xử lý lỗi chữ ký bên dưới trước khi gỡ ứng dụng.
+
+### APK debug từ GitHub Actions
+
+Nếu chưa có bản standalone trên Releases hoặc cần thử một commit cụ thể, dùng APK debug từ GitHub Actions.
+
 1. Đăng nhập GitHub và mở workflow [Android build](https://github.com/khoalpa/ai.player.android/actions/workflows/android-build.yml).
 2. Chọn lần chạy thành công mới nhất của nhánh `main` hoặc lần chạy ứng với commit bạn muốn thử. Ở cuối trang **Summary**, tải artifact **ai-player-debug-apk** trong mục **Artifacts**. Artifact được giữ 14 ngày. Nếu đã hết hạn, chọn lần chạy thành công còn artifact hoặc tự build theo hướng dẫn bên dưới.
 3. Giải nén tệp ZIP và lấy `app-standalone-debug.apk`. Đây là bản debug cài trực tiếp để dùng thử.
@@ -128,3 +147,4 @@ Dùng **Build → Generate Signed Bundle / APK** trong Android Studio để tạ
 - Thử video AAC/HE-AAC có sample rate đầu ra decoder khác metadata đầu vào, cùng video mono/stereo. Nhận dạng phải dùng sample rate PCM thực tế. Nếu sample rate thay đổi giữa luồng, tác vụ báo lỗi thay vì trả transcript sai thời gian.
 - Kiểm tra tạo transcript không có lời nói và hủy trong lúc nhận dạng; transcript hoàn chỉnh trước đó phải được giữ lại.
 - Unit test `ModelArchiveTest` kiểm tra đường dẫn ZIP thoát thư mục và thư mục cùng tiền tố. `ModelDownloadStreamTest` kiểm tra hủy đọc, Content-Length không xác định và đếm byte nén.
+
