@@ -2,6 +2,15 @@
 
 AI Player phát video bằng Media3, tạo transcript từ lời thoại bằng Vosk, dịch trên thiết bị bằng ML Kit và phát âm phụ đề bằng TextToSpeech của Android.
 
+## Giao diện ứng dụng
+
+Ảnh chụp AI Player trên Android với video và phụ đề mẫu.
+
+| Màn hình chính | Trình phát và phụ đề | Transcript |
+| --- | --- | --- |
+| <img src="docs/screenshots/home.png" width="220" alt="Màn hình chính với video mẫu trong danh sách gần đây"> | <img src="docs/screenshots/player.png" width="220" alt="Trình phát video với phụ đề tiếng Việt"> | <img src="docs/screenshots/transcript.png" width="220" alt="Danh sách transcript có mốc thời gian"> |
+
+
 ## Cài đặt từ GitHub
 
 Cần thiết bị chạy Android 8.0 (API 26) trở lên.
@@ -147,4 +156,3 @@ Dùng **Build → Generate Signed Bundle / APK** trong Android Studio để tạ
 - Thử video AAC/HE-AAC có sample rate đầu ra decoder khác metadata đầu vào, cùng video mono/stereo. Nhận dạng phải dùng sample rate PCM thực tế. Nếu sample rate thay đổi giữa luồng, tác vụ báo lỗi thay vì trả transcript sai thời gian.
 - Kiểm tra tạo transcript không có lời nói và hủy trong lúc nhận dạng; transcript hoàn chỉnh trước đó phải được giữ lại.
 - Unit test `ModelArchiveTest` kiểm tra đường dẫn ZIP thoát thư mục và thư mục cùng tiền tố. `ModelDownloadStreamTest` kiểm tra hủy đọc, Content-Length không xác định và đếm byte nén.
-
