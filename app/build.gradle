@@ -59,7 +59,7 @@ androidComponents {
 dependencies {
     implementation "androidx.activity:activity:1.13.0"
     implementation "com.google.mlkit:translate:17.0.3"
-    implementation "org.jsoup:jsoup:1.19.1"
+    implementation "org.jsoup:jsoup:1.23.2"
     implementation "com.google.mlkit:language-id:17.0.6"
     implementation "androidx.media3:media3-exoplayer:1.8.0"
     implementation "androidx.media3:media3-exoplayer-hls:1.8.0"
@@ -69,7 +69,7 @@ dependencies {
     implementation "com.alphacephei:vosk-android:0.3.75@aar"
 
     testImplementation "junit:junit:4.13.2"
-    testImplementation "org.json:json:20240303"
+    testImplementation "org.json:json:20260719"
 }
 
 tasks.withType(JavaCompile).configureEach {
