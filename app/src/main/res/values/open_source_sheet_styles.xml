@@ -1,0 +1,6 @@
+<resources>
+    <style name="OpenSourceSheetAnimation">
+        <item name="android:windowEnterAnimation">@anim/open_source_sheet_enter</item>
+        <item name="android:windowExitAnimation">@anim/open_source_sheet_exit</item>
+    </style>
+</resources>

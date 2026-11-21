@@ -56,4 +56,26 @@ public class TranslationBatchTest {
         assertEquals(1, resumed.input.size());
         assertSame(cues.get(0), resumed.input.get(0));
     }
+
+    @Test public void retryKeepsManualAndOriginalChoicesButSelectedCueCanBeTranslatedAgain() {
+        List<TranscriptCue> cues = cues();
+        TranscriptCue original = cues.get(0);
+        original.setTranslation(original.sourceText, TranscriptCue.TranslationOrigin.ORIGINAL);
+        TranscriptCue manual = cues.get(1);
+        manual.setTranslation("hai", TranscriptCue.TranslationOrigin.MANUAL);
+
+        TranslationBatch retry = new TranslationBatch(cues, "vi", "vi");
+        assertEquals(Arrays.asList(cues.get(2)), retry.input);
+        assertEquals(TranscriptCue.TranslationOrigin.MANUAL, manual.copy().translationOrigin);
+        assertEquals(TranscriptCue.TranslationOrigin.ORIGINAL, original.copy().translationOrigin);
+
+        TranslationBatch selected = new TranslationBatch(cues, "vi", "vi", original);
+        assertEquals(Arrays.asList(original), selected.input);
+        assertEquals(original.sourceText, original.targetText);
+        selected.accept(0, "mot");
+        assertEquals("mot", original.targetText);
+        assertEquals(TranscriptCue.TranslationOrigin.AUTOMATIC, original.translationOrigin);
+        assertEquals("hai", manual.targetText);
+        assertEquals(TranscriptCue.TranslationOrigin.MANUAL, manual.translationOrigin);
+    }
 }

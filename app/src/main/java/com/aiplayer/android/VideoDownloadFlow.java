@@ -35,6 +35,9 @@ final class VideoDownloadFlow {
     private boolean allowPublicFallback;
     private String error;
     private File completed;
+    private VideoSourceResolver.Source pageSource;
+    private java.util.List<WebVideoFinder.Candidate> pageResults;
+    private WebVideoSearchDialog webSearch;
 
     VideoDownloadFlow(Context context, SavedVideoStore store) {
         this.context = context.getApplicationContext();
@@ -69,6 +72,8 @@ final class VideoDownloadFlow {
     }
 
     String activeLabel() {
+        if (active.searching) return "Đang tìm video trên trang";
+        if (active.checking) return "Đang kiểm tra liên kết";
         return active.percent < 0 ? "Đang tải video…" : "Đang tải video · " + active.percent + "%";
     }
 
@@ -76,36 +81,44 @@ final class VideoDownloadFlow {
         if (dialog != null && dialog.isShowing()) return;
         if (active != null) showProgress();
         else if (completed != null && completed.isFile()) showCompleted();
+        else if (pageResults != null) showPageResults();
         else showInput();
+    }
+
+    void showTelegram(VideoSourceResolver.Source source) {
+        if (active != null) {
+            show();
+            return;
+        }
+        address = source.url.toExternalForm();
+        awaitingLogin = null;
+        clearError();
+        begin(source, connected());
     }
 
     private void showInput() {
         completed = null;
-        LinearLayout form = new LinearLayout(activity);
-        form.setOrientation(LinearLayout.VERTICAL);
-        int inset = Math.round(20 * activity.getResources().getDisplayMetrics().density);
-        form.setPadding(inset, 0, inset, 0);
+        LinearLayout form = WebVideoDialogLayout.body(activity);
+        WebVideoDialogLayout.header(form, settings, "Tải video từ URL", false, this::dismiss);
         EditText field = new EditText(activity);
         field.setSingleLine(true);
         field.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         field.setHint("https://example.com/video.mp4");
         field.setText(address);
-        form.addView(field);
+        LinearLayout entry = new LinearLayout(activity);
+        entry.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        entry.addView(field, new LinearLayout.LayoutParams(0, -2, 1));
+        WebVideoDialogLayout.add(form, entry, 8);
         TextView sourceLabel = new TextView(activity);
-        form.addView(sourceLabel);
+        WebVideoDialogLayout.add(form, sourceLabel, 8);
         TextView problem = new TextView(activity);
         form.addView(problem);
         LinearLayout actions = new LinearLayout(activity);
         actions.setOrientation(LinearLayout.VERTICAL);
-        form.addView(actions);
         if (error != null) problem.setText(error);
-        android.widget.ScrollView scroll = new android.widget.ScrollView(activity);
-        scroll.addView(form);
-        AlertDialog input = new PlayerAppearance.DialogBuilder(activity, settings)
-                .setTitle("Tải video từ URL").setView(scroll)
-                .setNegativeButton("Đóng", null)
-                .setNeutralButton("Dán", null)
-                .setPositiveButton(failedSource == null ? "Tải" : "Thử lại", null).create();
+        boolean knownPage = isKnownPage();
+        var load = WebVideoDialogLayout.button(activity, settings,
+                knownPage ? "Tìm video trên trang" : "Tải video", true, () -> {});
         field.addTextChangedListener(new android.text.TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
             @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
@@ -114,13 +127,24 @@ final class VideoDownloadFlow {
                 clearError();
                 problem.setText("");
                 actions.setVisibility(android.view.View.GONE);
-                android.widget.Button load = input.getButton(AlertDialog.BUTTON_POSITIVE);
-                if (load != null) load.setText("Tải");
+                load.setText(isKnownPage() ? "Tìm video trên trang" : "Tải video");
                 updateSourceLabel(sourceLabel);
             }
             @Override public void afterTextChanged(android.text.Editable value) {}
         });
         updateSourceLabel(sourceLabel);
+        if (StorageSpace.isLowSpace(error)) {
+            addAction(actions, "Dữ liệu và bộ nhớ", () -> {
+                dismiss();
+                activity.openStorageFromDownload();
+            });
+        }
+        if (knownPage) {
+            sourceLabel.setText("Liên kết mở một trang xem video.");
+            problem.setText("Chọn Tìm video trên trang để kiểm tra nguồn phát.");
+            addAction(actions, "Mở trang để tìm video", this::openWebSearch);
+            addAction(actions, "Mở trình duyệt", this::openOriginalPage);
+        }
         if (failedSource != null && isTelegram(failedSource)) {
             if (failedViaAccount && allowPublicFallback) {
                 addAction(actions, "Thử bản công khai", () -> {
@@ -139,8 +163,7 @@ final class VideoDownloadFlow {
                 if (failedSource != null) openTelegram.accept(failedSource.url);
             });
         }
-        display(input);
-        input.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(view -> {
+        var paste = WebVideoDialogLayout.button(activity, settings, "Dán", false, () -> {
             ClipboardManager clipboard = activity.getSystemService(ClipboardManager.class);
             android.content.ClipData clip = clipboard == null ? null : clipboard.getPrimaryClip();
             if (clip == null || clip.getItemCount() == 0) {
@@ -150,18 +173,20 @@ final class VideoDownloadFlow {
             field.setText(clip.getItemAt(0).coerceToText(activity));
             field.setSelection(field.length());
         });
-        input.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+        var pasteParams = new LinearLayout.LayoutParams(-2, -2);
+        pasteParams.setMarginStart(WebVideoDialogLayout.dp(activity, 8));
+        entry.addView(paste, pasteParams);
+        WebVideoDialogLayout.add(form, load, 16);
+        WebVideoDialogLayout.add(form, actions, 8);
+        load.setOnClickListener(view -> {
+            if (isKnownPage()) {
+                findPageVideo();
+                return;
+            }
             try {
                 VideoSourceResolver.Source source = VideoSourceResolver.classify(address);
                 if (source.kind == VideoSourceResolver.Kind.UNSUPPORTED_PAGE) {
                     problem.setText("Hãy dùng liên kết bài đăng Telegram hoặc chia sẻ tệp từ Telegram.");
-                    return;
-                }
-                if (source.kind == VideoSourceResolver.Kind.TELEGRAM_PRIVATE_POST && !connected()) {
-                    failedSource = source;
-                    error = "Cần đăng nhập Telegram bằng tài khoản có quyền truy cập bài đăng này.";
-                    dismiss();
-                    showInput();
                     return;
                 }
                 begin(source, connected() && (source.kind == VideoSourceResolver.Kind.TELEGRAM_PRIVATE_POST
@@ -170,19 +195,25 @@ final class VideoDownloadFlow {
                 problem.setText("Hãy nhập link video HTTPS hoặc link bài đăng Telegram hợp lệ.");
             }
         });
+        display(new PlayerAppearance.DialogBuilder(activity, settings)
+                .setView(WebVideoDialogLayout.scroll(form)).create());
     }
 
-    private void addAction(LinearLayout form, String label, Runnable action) {
-        android.widget.Button button = new android.widget.Button(activity);
-        button.setText(label);
-        button.setAllCaps(false);
-        button.setMinimumHeight(Math.round(48 * activity.getResources().getDisplayMetrics().density));
-        PlayerAppearance.styleButton(button, false, settings);
-        button.setOnClickListener(view -> action.run());
-        form.addView(button);
+    private boolean isKnownPage() {
+        return pageSource != null && address.trim().equals(pageSource.url.toExternalForm());
+    }
+
+    private android.widget.Button addAction(LinearLayout form, String label, Runnable action) {
+        var button = WebVideoDialogLayout.button(activity, settings, label, false, action);
+        WebVideoDialogLayout.add(form, button, 8);
+        return button;
     }
 
     private void updateSourceLabel(TextView label) {
+        if (isKnownPage()) {
+            label.setText("Liên kết mở một trang xem video.");
+            return;
+        }
         try {
             VideoSourceResolver.Kind kind = VideoSourceResolver.classify(address).kind;
             if (kind == VideoSourceResolver.Kind.TELEGRAM_PRIVATE_POST) {
@@ -192,7 +223,7 @@ final class VideoDownloadFlow {
         } catch (Exception invalid) {
             // Keep the supported-source hint while the address is incomplete.
         }
-        label.setText("Hỗ trợ URL video trực tiếp và bài đăng Telegram.");
+        label.setText("Dùng URL HTTPS trỏ đến tệp video hoặc liên kết bài đăng Telegram có video.");
     }
 
     private static boolean isTelegram(VideoSourceResolver.Source source) {
@@ -211,21 +242,59 @@ final class VideoDownloadFlow {
     }
 
     private void begin(VideoSourceResolver.Source source, boolean account) {
+        begin(source, account, null);
+    }
+
+    void saveTelegramForPlayback(VideoSourceResolver.Source source,
+                                 java.util.function.BiConsumer<File, String> completion) {
+        if (active != null || !connected()) {
+            completion.accept(null, active != null ? "Đang có một lượt tải video khác."
+                    : "Cần kết nối Telegram để xác minh quyền lưu video.");
+            return;
+        }
+        begin(source, true, completion);
+    }
+
+    private void begin(VideoSourceResolver.Source source, boolean account,
+                       java.util.function.BiConsumer<File, String> completion) {
+        begin(source, account, completion, false);
+    }
+
+    private void begin(VideoSourceResolver.Source source, boolean account,
+                       java.util.function.BiConsumer<File, String> completion, boolean reload) {
         if (active != null) return;
+        completed = null;
         awaitingLogin = null;
         clearError();
         dismiss();
-        String key = SavedVideoStore.telegramKey(source);
-        File existing = store.findBySource(key);
+        File existing = reload ? null : store.findBySource(SavedVideoStore.sourceKey(source));
         if (existing != null) {
-            display(new PlayerAppearance.DialogBuilder(activity, settings).setTitle("Video đã có trong thư viện")
+            if (completion != null) {
+                completion.accept(existing, null);
+                return;
+            }
+            AlertDialog.Builder saved = new PlayerAppearance.DialogBuilder(activity, settings)
+                    .setTitle("Video đã có trong thư viện")
                     .setMessage(store.displayName(existing)).setNegativeButton("Đóng", null)
-                    .setPositiveButton("Mở video", (d, w) -> openVideo.accept(existing)).create());
+                    .setPositiveButton("Mở video đã lưu", (d, w) -> openVideo.accept(existing));
+            if (source.kind == VideoSourceResolver.Kind.DIRECT_FILE) {
+                saved.setNeutralButton("Tải lại", (d, w) -> begin(source, false, null, true));
+            }
+            display(saved.create());
+            return;
+        }
+        if (source.kind == VideoSourceResolver.Kind.TELEGRAM_PRIVATE_POST && !account) {
+            failedSource = source;
+            error = "Cần đăng nhập Telegram bằng tài khoản có quyền truy cập bài đăng này.";
+            showInput();
             return;
         }
         boolean telegramSource = isTelegram(source);
+        if (telegramSource) TelegramContentScreen.recordTransfer(context, source, "Chờ tải");
         Transfer transfer = new Transfer(source, telegramSource && account);
+        transfer.completion = completion;
         active = transfer;
+        transfer.checking = !telegramSource;
         transfer.status = telegramSource
                 ? (transfer.viaAccount ? "Đang tải bằng tài khoản Telegram…" : "Đang tìm video công khai…")
                 : "Đang kết nối…";
@@ -240,6 +309,7 @@ final class VideoDownloadFlow {
                     if (active != transfer) return;
                     if (failure != null) {
                         boolean fallback = source.kind == VideoSourceResolver.Kind.TELEGRAM_PUBLIC_POST
+                                && !StorageSpace.isLowSpace(failure)
                                 && !failure.startsWith("Bài đăng hạn chế")
                                 && !failure.startsWith("Không xác nhận được quyền lưu");
                         fail(transfer, failure, fallback);
@@ -279,7 +349,133 @@ final class VideoDownloadFlow {
         transfer.cancelRequest = download::cancel;
     }
 
+    private void findPageVideo() {
+        findPageVideo(null);
+    }
+
+    private void findPageVideo(java.util.List<String> observedUrls) {
+        if (active != null || pageSource == null) return;
+        WebVideoFinder finder = new WebVideoFinder();
+        Transfer transfer = new Transfer(pageSource, false);
+        transfer.searching = true;
+        transfer.status = "Đang kiểm tra nguồn video trên trang.";
+        transfer.cancelRequest = finder::cancel;
+        pageResults = null;
+        active = transfer;
+        showProgress();
+        notifyTransferChanged();
+        new Thread(() -> {
+            java.util.List<WebVideoFinder.Candidate> results = null;
+            String problem = null;
+            try {
+                results = observedUrls == null ? finder.find(transfer.source.url) : finder.verify(observedUrls);
+            } catch (Exception failure) {
+                problem = errorMessage(failure);
+            }
+            var found = results;
+            var error = problem;
+            new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
+                if (active != transfer) return;
+                if (error != null) {
+                    fail(transfer, error, false);
+                    return;
+                }
+                active = null;
+                pageResults = found;
+                notifyTransferChanged();
+                if (visible()) showPageResults();
+            });
+        }, "web-video-finder").start();
+    }
+
+    private void openWebSearch() {
+        if (pageSource == null || activity == null) return;
+        dismiss();
+        if (webSearch != null) webSearch.close();
+        webSearch = new WebVideoSearchDialog(activity, settings, pageSource.url.toExternalForm(),
+                this::findPageVideo, this::openOriginalPage);
+    }
+
+    void closeWebSearch() {
+        if (webSearch != null) {
+            webSearch.close();
+            webSearch = null;
+        }
+    }
+
+    private void showPageResults() {
+        var sources = pageResults;
+        LinearLayout actions = WebVideoDialogLayout.body(activity);
+        WebVideoDialogLayout.header(actions, settings, "Video trên trang", true, () -> {
+            pageResults = null;
+            showInput();
+        });
+        if (sources.isEmpty()) {
+            TextView message = new TextView(activity);
+            message.setText("Chưa tìm thấy nguồn video. Mở trang, nhấn phát rồi chọn Kiểm tra nguồn.");
+            WebVideoDialogLayout.add(actions, message, 8);
+        }
+        for (var source : sources) {
+            String name = SavedVideoStore.nameFromUrl(source.url.toExternalForm());
+            LinearLayout row = new LinearLayout(activity);
+            row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            LinearLayout labels = WebVideoDialogLayout.column(activity);
+            TextView host = new TextView(activity);
+            host.setText(source.format + " · " + source.url.getHost());
+            host.setSingleLine();
+            host.setEllipsize(TextUtils.TruncateAt.END);
+            labels.addView(host);
+            if (!TextUtils.isEmpty(name)) {
+                TextView filename = new TextView(activity);
+                filename.setText(name);
+                filename.setSingleLine();
+                filename.setEllipsize(TextUtils.TruncateAt.MIDDLE);
+                labels.addView(filename);
+            }
+            var labelParams = new LinearLayout.LayoutParams(0, -2, 1);
+            labelParams.setMarginEnd(WebVideoDialogLayout.dp(activity, 8));
+            row.addView(labels, labelParams);
+            var select = WebVideoDialogLayout.button(activity, settings,
+                    source.kind == WebVideoFinder.Kind.FILE ? "Tải" : "Phát",
+                    source == sources.get(0), () -> selectPageSource(source));
+            row.addView(select, new LinearLayout.LayoutParams(-2, -2));
+            WebVideoDialogLayout.add(actions, row, 8);
+        }
+        var openPage = WebVideoDialogLayout.button(activity, settings, "Mở trang để tìm video",
+                sources.isEmpty(), this::openWebSearch);
+        WebVideoDialogLayout.add(actions, openPage, 16);
+        if (!sources.isEmpty()) addAction(actions, "Tìm lại", this::findPageVideo);
+        display(new PlayerAppearance.DialogBuilder(activity, settings)
+                .setView(WebVideoDialogLayout.scroll(actions)).create());
+    }
+
+    private void selectPageSource(WebVideoFinder.Candidate candidate) {
+        pageResults = null;
+        dismiss();
+        if (candidate.kind == WebVideoFinder.Kind.FILE) {
+            begin(new VideoSourceResolver.Source(VideoSourceResolver.Kind.DIRECT_FILE,
+                    candidate.url, null, null), false);
+        } else {
+            activity.playWebVideo(candidate, this::findPageVideo, this::openWebSearch);
+        }
+    }
+
+    private void openOriginalPage() {
+        try {
+            activity.startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW,
+                    android.net.Uri.parse(pageSource.url.toExternalForm())));
+        } catch (android.content.ActivityNotFoundException unavailable) {
+            android.widget.Toast.makeText(context, "Không có trình duyệt để mở trang.",
+                    android.widget.Toast.LENGTH_SHORT).show();
+        }
+    }
+
     private void updateBytes(Transfer transfer, long bytes, long total) {
+        if (active != transfer) return;
+        if (transfer.checking) {
+            transfer.checking = false;
+            if (visible()) dialog.setTitle("Đang tải video");
+        }
         transfer.percent = total > 0 ? (int) Math.min(100, 100.0 * bytes / total) : -1;
         String size = android.text.format.Formatter.formatShortFileSize(context, bytes);
         updateProgress(transfer, "Đã tải "
@@ -287,16 +483,22 @@ final class VideoDownloadFlow {
     }
 
     private void showProgress() {
-        display(new PlayerAppearance.DialogBuilder(activity, settings).setTitle("Đang tải video")
-                .setMessage(active.status)
-                .setNegativeButton("Hủy tải", (d, w) -> cancel())
-                .setPositiveButton("Đóng", null).create());
+        display(new PlayerAppearance.DialogBuilder(activity, settings)
+                .setTitle(active.searching ? "Đang tìm video trên trang"
+                        : active.checking ? "Đang kiểm tra liên kết" : "Đang tải video")
+                .setMessage(progressMessage(active.status))
+                .setPositiveButton(active.searching ? "Hủy tìm" : "Hủy tải", (d, w) -> cancel())
+                .setNegativeButton("Đóng tiến độ", null).create());
+    }
+
+    private static String progressMessage(String status) {
+        return status + "\n\nTác vụ tiếp tục khi bạn đóng hộp tiến độ.";
     }
 
     private void updateProgress(Transfer transfer, String status) {
         if (active != transfer) return;
         transfer.status = status;
-        if (visible()) dialog.setMessage(status);
+        if (visible()) dialog.setMessage(progressMessage(status));
         notifyTransferChanged();
     }
 
@@ -306,17 +508,29 @@ final class VideoDownloadFlow {
             return;
         }
         if (failure != null) {
+            if (transfer.source.kind == VideoSourceResolver.Kind.DIRECT_FILE
+                    && failure instanceof WebVideoFinder.PageResponse
+                    && (pageSource == null || !address.trim().equals(pageSource.url.toExternalForm()))) {
+                pageSource = transfer.source;
+                address = pageSource.url.toExternalForm();
+            }
             fail(transfer, errorMessage(failure), false);
             return;
         }
         active = null;
-        String key = SavedVideoStore.telegramKey(transfer.source);
+        String key = SavedVideoStore.sourceKey(transfer.source);
         boolean telegramSource = isTelegram(transfer.source);
         String title = telegramSource ? transfer.title : SavedVideoStore.nameFromUrl(mediaUrl);
         if (telegramSource && title == null) title = "@" + transfer.source.channel + " · " + transfer.source.postId;
         store.remember(file, telegramSource ? "Telegram" : "URL", key, title);
+        if (telegramSource) TelegramContentScreen.recordTransfer(context, transfer.source, null);
         completed = file;
         notifyTransferChanged();
+        if (transfer.completion != null) {
+            dismiss();
+            transfer.completion.accept(file, null);
+            return;
+        }
         if (visible()) showCompleted();
         else android.widget.Toast.makeText(context, "Đã lưu video", android.widget.Toast.LENGTH_SHORT).show();
     }
@@ -331,6 +545,13 @@ final class VideoDownloadFlow {
 
     private void fail(Transfer transfer, String message, boolean fallback) {
         active = null;
+        if (isTelegram(transfer.source)) TelegramContentScreen.recordTransfer(context, transfer.source, "Tải lỗi");
+        if (transfer.completion != null) {
+            dismiss();
+            notifyTransferChanged();
+            transfer.completion.accept(null, message);
+            return;
+        }
         failedSource = transfer.source;
         failedViaAccount = transfer.viaAccount;
         allowPublicFallback = fallback;
@@ -381,6 +602,7 @@ final class VideoDownloadFlow {
         Transfer transfer = active;
         active = null;
         if (transfer == null) return;
+        if (isTelegram(transfer.source)) TelegramContentScreen.recordTransfer(context, transfer.source, "Chờ tải");
         transfer.cancelled = true;
         if (transfer.cancelRequest != null) transfer.cancelRequest.run();
         if (transfer.client != null) transfer.client.cancelMessageVideo(transfer.telegramResult);
@@ -392,6 +614,7 @@ final class VideoDownloadFlow {
     }
 
     void detach() {
+        closeWebSearch();
         dismiss();
         activity = null;
         settings = null;
@@ -415,8 +638,11 @@ final class VideoDownloadFlow {
         int percent = -1;
         volatile boolean cancelled;
         Runnable cancelRequest;
+        boolean searching;
+        boolean checking;
         TelegramSessionClient client;
         TelegramSessionClient.MessageVideoResult telegramResult;
+        java.util.function.BiConsumer<File, String> completion;
 
         Transfer(VideoSourceResolver.Source source, boolean viaAccount) {
             this.source = source;

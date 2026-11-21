@@ -7,6 +7,7 @@ AI Player phát video bằng Media3, tạo transcript từ lời thoại bằng 
 - **Mở video → Chọn tệp trên thiết bị** để phát tệp cục bộ. Màn hình khởi động hiển thị tối đa ba video gần đây và cho phép mở lại tại vị trí đã lưu.
 - **Mở video → Tải video từ URL** để tải video từ liên kết được hỗ trợ. Video tải thành công xuất hiện trong **Video đã lưu**.
 - Có thể chia sẻ tệp video từ Telegram sang AI Player bằng menu chia sẻ Android. Với liên kết bài đăng Telegram, ứng dụng có thể thử tải từ bài đăng công khai hoặc dùng tài khoản Telegram qua TDLib. Khả năng tải phụ thuộc vào quyền truy cập và quyền lưu của bài đăng. Xem [luồng nhập Telegram](docs/telegram-import.md) và [tích hợp TDLib](docs/telegram-tdlib-integration.md).
+- Có thể mở liên kết `t.me`, `www.t.me` và `telegram.me` qua AI Player khi Android chuyển liên kết cho ứng dụng. Nếu thiết bị mở bằng Telegram hoặc trình duyệt theo mặc định, có thể dùng **Chia sẻ → AI Player** hoặc dán liên kết vào **Mở Telegram**.
 
 ## Transcript, bản dịch và phụ đề
 
@@ -20,14 +21,20 @@ Có thể đóng gói model nhận dạng Vosk vào APK theo [hướng dẫn mod
 
 ## Build và kiểm thử
 
-Cần JDK 17, Android SDK 35 và thiết bị hoặc máy ảo Android 8.0 (API 26) trở lên. Trong Android Studio, mở thư mục gốc dự án, chọn `standaloneDebug` hoặc `playDebug` trong **Build Variants**, rồi chọn thiết bị và bấm **Run**.
+Cần JDK 21, Android SDK 36 và thiết bị hoặc máy ảo Android 8.0 (API 26) trở lên. Trong Android Studio, chọn JDK 21 cho Gradle, mở thư mục gốc dự án, chọn `standaloneDebug` hoặc `playDebug` trong **Build Variants**, rồi chọn thiết bị và bấm **Run**.
 
 | Biến thể | Mục đích |
 |---|---|
-| `standalone` | Cài đặt riêng bằng APK, có danh sách host URL mở rộng |
+| `standalone` | Cài đặt riêng bằng APK |
 | `play` | Bản build dành cho Google Play |
 
 Để kiểm tra đăng nhập Telegram qua TDLib trên thiết bị `arm64-v8a`, cần đóng gói thư viện native tương ứng. Trên Linux hoặc WSL2 có Docker, chạy `bash scripts/build-tdlib-jsonjava.sh` trước khi build. Xem [hướng dẫn TDLib](docs/telegram-tdlib-integration.md).
+
+### Kiểm tra Telegram trên thiết bị ARM64
+
+1. Mở liên kết bài công khai từ bên ngoài khi AI Player đang đóng và đang chạy. Kiểm tra màn **Nội dung Telegram**, rồi thử **Mở trong Telegram** để xác nhận trình chọn ứng dụng không đưa liên kết ngược về AI Player.
+2. Đăng nhập Telegram, mở bài riêng tư có quyền truy cập và thử chuyển video của bài sang trình phát chính. Kiểm tra cả trường hợp thiếu quyền truy cập.
+3. Mở bài dài, mở rộng nội dung, bật bản dịch, cuộn xuống rồi cho Android tạo lại Activity. Kiểm tra ứng dụng mở lại bài, hiển thị bản dịch đã lưu và cuộn về vị trí cũ sau khi tải nội dung.
 
 Chạy từ thư mục gốc trên Windows. Trên Linux hoặc macOS, thay `.\gradlew.bat` bằng `./gradlew`.
 
@@ -37,6 +44,21 @@ Chạy từ thư mục gốc trên Windows. Trên Linux hoặc macOS, thay `.\gr
 ```
 
 APK debug nằm trong `app/build/outputs/apk/<flavor>/debug/`. Trên thiết bị, kiểm tra video có một, nhiều hoặc không có track âm thanh, nhập SRT/VTT, tải model lần đầu, dịch offline sau khi tải model, đổi video khi tác vụ đang chạy và tua/tạm dừng khi giọng đọc đang phát.
+
+### Chuẩn bị bản phát hành
+
+Hai biến thể dùng chung mã nguồn, package, phiên bản và cấu hình SDK. Chạy workflow **Android build** thủ công từ commit đã chốt để tạo cặp AAB và APK chưa ký, hoặc chạy lệnh sau trên cùng checkout:
+
+```powershell
+.\gradlew.bat :app:bundlePlayRelease :app:assembleStandaloneRelease
+```
+
+| Biến thể | Gói phát hành | Khóa ký |
+|---|---|---|
+| `playRelease` | `app/build/outputs/bundle/playRelease/app-play-release.aab` | Upload key đăng ký trong Play Console. Google Play ký APK phân phối bằng app signing key. |
+| `standaloneRelease` | `app/build/outputs/apk/standalone/release/app-standalone-release-unsigned.apk` | Khóa phát hành APK cài trực tiếp. Giữ khóa tương thích với APK đã phân phối. |
+
+Dùng **Build → Generate Signed Bundle / APK** trong Android Studio để tạo bản đã ký từ cùng commit. Kiểm tra `versionCode` với lịch sử phát hành trước khi tải lên. Chuyển kênh tại chỗ cần chữ ký tương thích và `versionCode` phù hợp. So sánh chứng thư của APK phân phối qua Play với APK cài trực tiếp và thử cập nhật trên thiết bị có dữ liệu trước khi công bố khả năng chuyển kênh.
 
 ## Mã nguồn
 

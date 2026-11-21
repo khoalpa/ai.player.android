@@ -39,13 +39,35 @@ final class SavedVideoStore {
     private final SharedPreferences metadata;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
+    private static boolean downloadPartialsChecked;
 
     SavedVideoStore(Context context) {
         this.context = context.getApplicationContext();
         metadata = this.context.getSharedPreferences("saved_video_metadata", Context.MODE_PRIVATE);
+        cleanAbandonedDownloadPartials(new File(this.context.getFilesDir(), "saved_videos"));
+    }
+
+    private static synchronized void cleanAbandonedDownloadPartials(File directory) {
+        if (downloadPartialsChecked) return;
+        downloadPartialsChecked = true;
+        // The first store in this process is created before any URL download can write a partial.
+        File[] partials = directory.listFiles(file -> file.isFile()
+                && file.getName().startsWith("video_") && file.getName().endsWith(".part"));
+        if (partials != null) {
+            for (File partial : partials) partial.delete();
+        }
+    }
+
+    static String sourceKey(VideoSourceResolver.Source source) {
+        return source.kind == VideoSourceResolver.Kind.DIRECT_FILE
+                ? VideoUrlPolicy.directSourceKey(source.url) : telegramKey(source);
     }
 
     static String telegramKey(VideoSourceResolver.Source source) {
+        if (source.kind == VideoSourceResolver.Kind.TELEGRAM_PRIVATE_POST) {
+            String[] parts = source.url.getPath().replaceFirst("/$", "").split("/");
+            return "c/" + parts[2] + "/" + parts[parts.length - 1];
+        }
         return source.kind == VideoSourceResolver.Kind.TELEGRAM_PUBLIC_POST
                 ? source.channel.toLowerCase(java.util.Locale.ROOT) + "/" + source.postId : null;
     }
@@ -116,6 +138,7 @@ final class SavedVideoStore {
                 URL originalUrl = url;
                 for (int redirects = 0; ; redirects++) {
                     if (task.isCancelled()) throw new IOException("Đã hủy tải video");
+                    VideoUrlPolicy.requireDownloadablePath(url);
                     connection = (HttpURLConnection) url.openConnection();
                     task.activeConnection = connection;
                     connection.setConnectTimeout(15000);
@@ -131,46 +154,61 @@ final class SavedVideoStore {
                         url = next;
                         continue;
                     }
-                    if (status != HttpURLConnection.HTTP_OK) throw new IOException("HTTP " + status);
+                    if (status != HttpURLConnection.HTTP_OK) {
+                        throw new IOException(VideoUrlPolicy.downloadHttpError(status));
+                    }
                     break;
                 }
-                String extension = VideoUrlPolicy.downloadExtension(url, originalUrl, connection.getContentType());
-                String name = "video_" + System.currentTimeMillis() + "_" +
-                        java.util.UUID.randomUUID().toString().substring(0, 8) + extension;
-                File dir = directory();
-                File destination = new File(dir, name);
-                temp = new File(dir, name + ".part");
-                long length = connection.getContentLengthLong();
-                if (length > VideoUrlPolicy.MAX_BYTES) throw new IOException("Video vượt giới hạn 2 GB");
-                if (length > 0 && dir.getUsableSpace() < length + 16L * 1024 * 1024)
-                    throw new IOException("Không đủ dung lượng lưu trữ");
-                long bytes = 0;
-                long lastUpdate = 0;
-                try (InputStream input = connection.getInputStream();
-                     FileOutputStream output = new FileOutputStream(temp)) {
-                    byte[] buffer = new byte[65536];
-                    int n;
-                    while ((n = input.read(buffer)) != -1) {
-                        if (task.isCancelled()) throw new IOException("Đã hủy tải video");
-                        bytes += n;
-                        if (bytes > VideoUrlPolicy.MAX_BYTES) throw new IOException("Video vượt giới hạn 2 GB");
-                        if (dir.getUsableSpace() < 1024 * 1024) throw new IOException("Không đủ dung lượng lưu trữ");
-                        output.write(buffer, 0, n);
-                        long now = SystemClock.elapsedRealtime();
-                        if (now - lastUpdate > 300) {
-                            lastUpdate = now;
-                            long current = bytes;
-                            main.post(() -> progress.update(current, length));
-                        }
+                try (java.io.BufferedInputStream input = new java.io.BufferedInputStream(connection.getInputStream())) {
+                    input.mark(WebVideoFinder.PREFIX_BYTES);
+                    WebVideoFinder.Kind kind = WebVideoFinder.inspect(
+                            WebVideoFinder.readPrefix(input, WebVideoFinder.PREFIX_BYTES), connection.getContentType());
+                    if (task.isCancelled()) throw new IOException("Đã hủy tải video");
+                    if (kind == WebVideoFinder.Kind.PAGE) throw new WebVideoFinder.PageResponse();
+                    if (kind == WebVideoFinder.Kind.HLS || kind == WebVideoFinder.Kind.DASH) {
+                        throw new IOException(VideoUrlPolicy.streamingMessage());
                     }
-                    output.getFD().sync();
+                    if (kind == WebVideoFinder.Kind.OTHER) {
+                        throw new IOException("Liên kết trả về nội dung không phải video.");
+                    }
+                    input.reset();
+                    String extension = VideoUrlPolicy.downloadExtension(url, originalUrl, connection.getContentType());
+                    String name = "video_" + System.currentTimeMillis() + "_" +
+                            java.util.UUID.randomUUID().toString().substring(0, 8) + extension;
+                    File dir = directory();
+                    File destination = new File(dir, name);
+                    temp = new File(dir, name + ".part");
+                    long length = connection.getContentLengthLong();
+                    if (length > VideoUrlPolicy.MAX_BYTES) throw new IOException("Video vượt giới hạn 2 GB");
+                    if (length > 0) StorageSpace.require(context, dir, length + StorageSpace.VIDEO_RESERVE);
+                    main.post(() -> progress.update(0, length));
+                    long bytes = 0;
+                    long lastUpdate = 0;
+                    try (FileOutputStream output = new FileOutputStream(temp)) {
+                        byte[] buffer = new byte[65536];
+                        int n;
+                        while ((n = input.read(buffer)) != -1) {
+                            if (task.isCancelled()) throw new IOException("Đã hủy tải video");
+                            bytes += n;
+                            if (bytes > VideoUrlPolicy.MAX_BYTES) throw new IOException("Video vượt giới hạn 2 GB");
+                            StorageSpace.require(context, dir, n + StorageSpace.WRITE_RESERVE);
+                            output.write(buffer, 0, n);
+                            long now = SystemClock.elapsedRealtime();
+                            if (now - lastUpdate > 300) {
+                                lastUpdate = now;
+                                long current = bytes;
+                                main.post(() -> progress.update(current, length));
+                            }
+                        }
+                        output.getFD().sync();
+                    }
+                    if (task.isCancelled()) throw new IOException("Đã hủy tải video");
+                    if (length >= 0 && bytes != length) throw new IOException("Tệp tải về chưa đầy đủ");
+                    validateVideo(temp);
+                    if (task.isCancelled()) throw new IOException("Đã hủy tải video");
+                    if (!temp.renameTo(destination)) throw new IOException("Không thể lưu video");
+                    main.post(() -> callback.done(destination, null));
                 }
-                if (task.isCancelled()) throw new IOException("Đã hủy tải video");
-                if (length >= 0 && bytes != length) throw new IOException("Tệp tải về chưa đầy đủ");
-                validateVideo(temp);
-                if (task.isCancelled()) throw new IOException("Đã hủy tải video");
-                if (!temp.renameTo(destination)) throw new IOException("Không thể lưu video");
-                main.post(() -> callback.done(destination, null));
             } catch (Exception error) {
                 if (temp != null) temp.delete();
                 main.post(() -> callback.done(null, error));

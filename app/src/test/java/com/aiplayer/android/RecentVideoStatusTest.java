@@ -5,7 +5,6 @@ import org.junit.Test;
 import java.util.Arrays;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class RecentVideoStatusTest {
@@ -13,8 +12,14 @@ public class RecentVideoStatusTest {
     public void transcriptFailureStaysVisibleWhenPreviousTranslationIsComplete() {
         RecentVideoStatus status = RecentVideoStatus.from(VideoSession.Task.TRANSCRIPT, 4, 4);
 
-        assertTrue(status.warning);
+        assertEquals(PlayerAppearance.StatusIcon.ERROR, status.icon);
         assertTrue(status.text.contains("Tạo lại transcript lỗi"));
+    }
+
+    @Test
+    public void partialTranslationUsesWarningAndCompletedTranslationUsesSuccess() {
+        assertEquals(PlayerAppearance.StatusIcon.WARNING, RecentVideoStatus.from(null, 2, 1).icon);
+        assertEquals(PlayerAppearance.StatusIcon.SUCCESS, RecentVideoStatus.from(null, 2, 2).icon);
     }
 
     @Test
@@ -27,9 +32,9 @@ public class RecentVideoStatusTest {
 
         RecentVideoStatus vietnamese = summary.statusFor("vi", VideoSession.Task.TRANSLATION, "vi");
         RecentVideoStatus japanese = summary.statusFor("ja", VideoSession.Task.TRANSLATION, "vi");
-        assertTrue(vietnamese.warning);
+        assertEquals(PlayerAppearance.StatusIcon.ERROR, vietnamese.icon);
         assertTrue(vietnamese.text.contains("1/2"));
-        assertFalse(japanese.warning);
+        assertEquals(PlayerAppearance.StatusIcon.SUCCESS, japanese.icon);
         assertEquals(RecentVideoStatus.from(null, 2, 0).text, japanese.text);
     }
 }

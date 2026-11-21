@@ -48,8 +48,8 @@ final class TelegramPublicResolver {
                         output.write(buffer, 0, n);
                     }
                 }
-                String media = VideoSourceResolver.extractPublicMediaUrl(
-                        new String(output.toByteArray(), StandardCharsets.UTF_8));
+                String media = TelegramPublicContent.resolveVideo(
+                        new String(output.toByteArray(), StandardCharsets.UTF_8), source);
                 main.post(() -> {
                     if (!cancelled.get()) callback.resolved(media, null);
                 });

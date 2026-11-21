@@ -29,6 +29,7 @@ final class OfflineModels {
     boolean translationsLoaded;
     boolean translationQueryFailed;
     int recognitionPercent = -1;
+    final Map<String, String> recognitionSpaceErrors = new HashMap<>();
 
     private final ConnectivityManager connectivity;
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -75,6 +76,7 @@ final class OfflineModels {
 
     void downloadRecognition(String language) {
         if (pending(recognition)) return;
+        recognitionSpaceErrors.remove(language);
         if (!hasInternetConnection()) {
             finish(recognition, language, Operation.DOWNLOAD_FAILED);
             return;
@@ -95,7 +97,10 @@ final class OfflineModels {
                 main.post(() -> finish(recognition, language, null));
             }
             @Override public void onError(String message) {
-                main.post(() -> finish(recognition, language, Operation.DOWNLOAD_FAILED));
+                main.post(() -> {
+                    if (StorageSpace.isLowSpace(message)) recognitionSpaceErrors.put(language, message);
+                    finish(recognition, language, Operation.DOWNLOAD_FAILED);
+                });
             }
             @Override public void onStatus(String message) {}
         });

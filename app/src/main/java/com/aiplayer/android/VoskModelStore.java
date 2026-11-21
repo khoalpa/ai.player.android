@@ -176,10 +176,12 @@ final class VoskModelStore {
                     if (parent != null) {
                         parent.mkdirs();
                     }
+                    if (entry.getSize() > 0) StorageSpace.require(context, tempDir, entry.getSize());
                     try (FileOutputStream out = new FileOutputStream(outFile)) {
                         int read;
                         while ((read = zip.read(buffer)) != -1) {
                             checkCancelled(callback);
+                            StorageSpace.require(context, tempDir, read);
                             out.write(buffer, 0, read);
                         }
                     }
@@ -221,6 +223,18 @@ final class VoskModelStore {
 
     private File modelDir(String assetName) {
         return new File(new File(context.getFilesDir(), "vosk_models"), assetName);
+    }
+
+    static String downloadPackage(String language) {
+        String url = specFor(language).url;
+        return url.substring(url.lastIndexOf('/') + 1);
+    }
+
+    long installedBytes(String language) {
+        File directory = modelDir(modelKey(language));
+        if (!isModelReady(directory)) return -1;
+        long bytes = directoryBytes(directory);
+        return bytes > 0 && isModelReady(directory) ? bytes : -1;
     }
 
     long downloadedBytes() {

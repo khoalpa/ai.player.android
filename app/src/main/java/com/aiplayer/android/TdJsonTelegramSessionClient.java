@@ -279,6 +279,23 @@ final class TdJsonTelegramSessionClient implements TelegramSessionClient {
     }
 
     @Override public void downloadPrivateMessageVideo(String postUrl, MessageVideoResult callback) {
+        resolveMessageVideo(postUrl, callback, false);
+    }
+
+    @Override public void prepareMessageVideoForPlayback(String postUrl, MessageVideoResult callback) {
+        try {
+            TelegramLink link = TelegramLink.parse(postUrl);
+            if (link.isComment() || (!link.isPublicPost() && !link.isPrivatePost())) {
+                callback.finished(null, "Liên kết này chưa hỗ trợ phát video qua TDLib.");
+                return;
+            }
+            resolveMessageVideo(link.url.toString(), callback, true);
+        } catch (Exception error) {
+            callback.finished(null, "Liên kết Telegram không hợp lệ");
+        }
+    }
+
+    private void resolveMessageVideo(String postUrl, MessageVideoResult callback, boolean playback) {
         if (!nativeLoaded || !running || flow.state() != TelegramAuthorizationFlow.State.READY) {
             callback.finished(null, "Bạn cần đăng nhập Telegram");
             return;
@@ -294,10 +311,346 @@ final class TdJsonTelegramSessionClient implements TelegramSessionClient {
                     callback.finished(null, "Không truy cập được bài đăng. Hãy kiểm tra quyền truy cập của tài khoản Telegram.");
                     return;
                 }
-                onMessage(message, callback);
+                if (playback && "message".equals(message.optString("@type"))) {
+                    downloadVideoFile(message, callback, true);
+                } else if (playback) {
+                    callback.finished(null, "Không truy cập được video bằng tài khoản Telegram.");
+                } else {
+                    onMessage(message, callback);
+                }
             });
         } catch (Exception error) {
             callback.finished(null, "Liên kết Telegram không hợp lệ");
+        }
+    }
+
+    void checkSavePermission(TelegramLink link, java.util.function.Consumer<Boolean> callback) {
+        if (!running || flow.state() != TelegramAuthorizationFlow.State.READY) {
+            callback.accept(false);
+            return;
+        }
+        try {
+            send(request("getMessageLinkInfo").put("url", link.url.toString()), info -> {
+                JSONObject message = info.optJSONObject("message");
+                if (message == null || message.has("can_be_saved")) {
+                    callback.accept(message != null && message.optBoolean("can_be_saved"));
+                    return;
+                }
+                try {
+                    send(request("getMessageProperties").put("chat_id", message.getLong("chat_id"))
+                            .put("message_id", message.getLong("id")), properties ->
+                            callback.accept("messageProperties".equals(properties.optString("@type"))
+                                    && properties.optBoolean("can_be_saved")));
+                } catch (org.json.JSONException error) {
+                    callback.accept(false);
+                }
+            });
+        } catch (org.json.JSONException error) {
+            callback.accept(false);
+        }
+    }
+
+    private final java.util.Set<String> pendingInvites = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    void checkInvite(String link, java.util.function.Consumer<JSONObject> callback) {
+        inviteRequest(request("checkChatInviteLink"), "invite_link", link, callback);
+    }
+
+    boolean isInvitePending(String link) {
+        return pendingInvites.contains(link);
+    }
+
+    void joinInvite(String link, java.util.function.Consumer<JSONObject> callback) {
+        inviteRequest(request("joinChatByInviteLink"), "invite_link", link, result -> {
+            if ("INVITE_REQUEST_SENT".equals(result.optString("message"))) pendingInvites.add(link);
+            callback.accept(result);
+        });
+    }
+
+    void checkInviteMembership(long chatId, java.util.function.Consumer<Boolean> callback) {
+        inviteRequest(request("getChat"), "chat_id", chatId, chat -> {
+            JSONObject type = chat.optJSONObject("type");
+            if (type == null) {
+                callback.accept(null);
+                return;
+            }
+            boolean basic = "chatTypeBasicGroup".equals(type.optString("@type"));
+            if (!basic && !"chatTypeSupergroup".equals(type.optString("@type"))) {
+                callback.accept(null);
+                return;
+            }
+            String key = basic ? "basic_group_id" : "supergroup_id";
+            inviteRequest(request(basic ? "getBasicGroup" : "getSupergroup"), key, type.optLong(key), group -> {
+                JSONObject status = group.optJSONObject("status");
+                if (status == null) {
+                    callback.accept(null);
+                    return;
+                }
+                switch (status.optString("@type")) {
+                    case "chatMemberStatusMember":
+                    case "chatMemberStatusAdministrator":
+                        callback.accept(true);
+                        break;
+                    case "chatMemberStatusCreator":
+                    case "chatMemberStatusRestricted":
+                        callback.accept(status.optBoolean("is_member"));
+                        break;
+                    default:
+                        callback.accept(false);
+                }
+            });
+        });
+    }
+
+    void previewInvitedChat(long chatId, long before,
+                            java.util.function.BiConsumer<TelegramPublicContent, Long> callback) {
+        inviteRequest(request("getChat"), "chat_id", chatId, chat -> {
+            JSONObject type = chat.optJSONObject("type");
+            if (type == null) {
+                callback.accept(null, before);
+                return;
+            }
+            long supergroup = type.optLong("supergroup_id");
+            JSONObject history = request("getChatHistory");
+            try {
+                history.put("limit", 20).put("from_message_id", before).put("offset", 0).put("only_local", false);
+            } catch (org.json.JSONException error) {
+                callback.accept(null, before);
+                return;
+            }
+            inviteRequest(history, "chat_id", chatId, response -> {
+                org.json.JSONArray messages = response.optJSONArray("messages");
+                if (messages == null) {
+                    callback.accept(null, before);
+                    return;
+                }
+                TelegramPublicContent result = new TelegramPublicContent();
+                result.title = chat.optString("title");
+                long oldest = 0;
+                for (int i = 0; i < messages.length(); i++) {
+                    JSONObject message = messages.optJSONObject(i);
+                    if (message == null) continue;
+                    long id = message.optLong("id");
+                    if (id <= 0 || (before != 0 && id >= before)) continue;
+                    if (oldest == 0 || id < oldest) oldest = id;
+                    long postId = id >> 20;
+                    String address = supergroup > 0 && postId > 0 && (postId << 20) == id
+                            ? "https://t.me/c/" + supergroup + "/" + postId
+                            : "tdlib:" + chatId + "/" + id;
+                    result.posts.add(previewPost(address, message));
+                }
+                callback.accept(result, oldest);
+            });
+        });
+    }
+
+    private void inviteRequest(JSONObject data, String key, Object value,
+                               java.util.function.Consumer<JSONObject> callback) {
+        try {
+            data.put(key, value);
+        } catch (org.json.JSONException error) {
+            callback.accept(new JSONObject());
+            return;
+        }
+        sendPreviewRequest(data, callback);
+    }
+
+    private void sendPreviewRequest(JSONObject data, java.util.function.Consumer<JSONObject> callback) {
+        if (!running || flow.state() != TelegramAuthorizationFlow.State.READY) {
+            callback.accept(new JSONObject());
+            return;
+        }
+        java.util.concurrent.atomic.AtomicBoolean completed = new java.util.concurrent.atomic.AtomicBoolean();
+        Runnable timeout = () -> {
+            if (completed.compareAndSet(false, true)) callback.accept(new JSONObject());
+        };
+        main.postDelayed(timeout, 20_000);
+        send(data, result -> {
+            if (!completed.compareAndSet(false, true)) return;
+            main.removeCallbacks(timeout);
+            callback.accept(result);
+        });
+    }
+
+    void previewRecentPosts(String username, java.util.function.Consumer<TelegramPublicContent> callback) {
+        previewRecentPosts(username, 0, callback);
+    }
+
+    void previewRecentPosts(String username, long before, java.util.function.Consumer<TelegramPublicContent> callback) {
+        if (!running || flow.state() != TelegramAuthorizationFlow.State.READY) {
+            callback.accept(null);
+            return;
+        }
+        try {
+            JSONObject search = request("searchPublicChat").put("username", username);
+            sendPreviewRequest(search, chat -> {
+                if (!"chat".equals(chat.optString("@type"))) {
+                    callback.accept(null);
+                    return;
+                }
+                try {
+                    JSONObject history = request("getChatHistory")
+                            .put("chat_id", chat.getLong("id"))
+                            .put("from_message_id", before == 0 ? 0 : TelegramMessageReference.toTdlibMessageId(before))
+                            .put("offset", 0)
+                            .put("limit", 20)
+                            .put("only_local", false);
+                    sendPreviewRequest(history, response -> {
+                        org.json.JSONArray messages = response.optJSONArray("messages");
+                        if (!"messages".equals(response.optString("@type")) || messages == null) {
+                            callback.accept(null);
+                            return;
+                        }
+                        TelegramPublicContent result = new TelegramPublicContent();
+                        result.title = chat.optString("title");
+                        for (int i = 0; i < messages.length(); i++) {
+                            JSONObject message = messages.optJSONObject(i);
+                            if (message == null) continue;
+                            long id = message.optLong("id");
+                            long postId = id >> 20;
+                            if (postId <= 0 || (postId << 20) != id) continue;
+                            if (before != 0 && postId >= before) continue;
+                            result.posts.add(previewPost("https://t.me/" + username + "/" + postId, message));
+                        }
+                        callback.accept(result);
+                    });
+                } catch (org.json.JSONException error) {
+                    callback.accept(null);
+                }
+            });
+        } catch (org.json.JSONException error) {
+            callback.accept(null);
+        }
+    }
+
+    void previewMessage(TelegramLink link, java.util.function.BiConsumer<TelegramPublicContent, Boolean> callback) {
+        if (!running || flow.state() != TelegramAuthorizationFlow.State.READY) {
+            callback.accept(null, false);
+            return;
+        }
+        java.util.concurrent.atomic.AtomicBoolean completed = new java.util.concurrent.atomic.AtomicBoolean();
+        Runnable timeout = () -> {
+            if (completed.compareAndSet(false, true)) callback.accept(null, false);
+        };
+        main.postDelayed(timeout, 20_000);
+        java.util.function.BiConsumer<TelegramPublicContent, Boolean> finish = (result, denied) -> {
+            if (!completed.compareAndSet(false, true)) return;
+            main.removeCallbacks(timeout);
+            callback.accept(result, denied);
+        };
+        JSONObject get = request("getMessageLinkInfo");
+        try {
+            get.put("url", link.url.toString());
+            send(get, info -> {
+                JSONObject message = info.optJSONObject("message");
+                if (message == null) {
+                    finish.accept(null, info.optInt("code") == 403
+                            || (info.has("is_accessible") && !info.optBoolean("is_accessible")));
+                    return;
+                }
+                TelegramPublicContent result = new TelegramPublicContent();
+                result.posts.add(previewPost(link.url.toString(), message));
+                long album = message.optLong("media_album_id");
+                if (album == 0 || link.url.getQuery() != null) {
+                    finish.accept(result, false);
+                    return;
+                }
+                try {
+                    JSONObject history = request("getChatHistory");
+                    history.put("chat_id", message.getLong("chat_id"));
+                    history.put("from_message_id", message.getLong("id"));
+                    history.put("offset", -9);
+                    history.put("limit", 20);
+                    history.put("only_local", false);
+                    send(history, nearby -> {
+                        org.json.JSONArray items = nearby.optJSONArray("messages");
+                        String prefix = link.url.toString().replaceFirst("/[0-9]+/?$", "/");
+                        for (int i = 0; items != null && i < items.length(); i++) {
+                            JSONObject member = items.optJSONObject(i);
+                            if (member == null || member.optLong("media_album_id") != album) continue;
+                            long id = member.optLong("id");
+                            long postId = id >> 20;
+                            if (id != message.optLong("id") && postId > 0 && (postId << 20) == id) {
+                                result.posts.add(previewPost(prefix + postId, member));
+                            }
+                        }
+                        finish.accept(result, false);
+                    });
+                } catch (org.json.JSONException error) {
+                    finish.accept(result, false);
+                }
+            });
+        } catch (org.json.JSONException error) {
+            finish.accept(null, false);
+        }
+    }
+
+    private static TelegramPublicContent.Post previewPost(String url, JSONObject message) {
+        JSONObject content = message.optJSONObject("content");
+        if (content == null) content = new JSONObject();
+        String type = content.optString("@type");
+        JSONObject formatted = content.optJSONObject("messageText".equals(type) ? "text" : "caption");
+        String text = formatted == null ? "" : formatted.optString("text");
+        JSONObject document = content.optJSONObject("document");
+        long date = message.optLong("date");
+        String timestamp = date > 0 ? java.time.Instant.ofEpochSecond(date).toString() : "";
+        boolean video = "messageVideo".equals(type)
+                || (document != null && document.optString("mime_type").startsWith("video/"));
+        TelegramPublicContent.Post post = new TelegramPublicContent.Post(url, "", timestamp, text, "", video);
+        org.json.JSONArray entities = formatted == null ? null : formatted.optJSONArray("entities");
+        for (int i = 0; entities != null && i < entities.length(); i++) {
+            JSONObject entity = entities.optJSONObject(i);
+            JSONObject linkType = entity == null ? null : entity.optJSONObject("type");
+            if (linkType == null || !"textEntityTypeTextUrl".equals(linkType.optString("@type"))) continue;
+            int start = entity.optInt("offset", -1);
+            post.addLink(start, start + entity.optInt("length"), linkType.optString("url"));
+        }
+        post.canSave = message.optBoolean("can_be_saved", true);
+        post.saveVerified = message.optBoolean("can_be_saved", false);
+        JSONObject audio = content.optJSONObject("audio");
+        if (audio != null) post.attachment = "Âm thanh · " + audio.optString("file_name", "Tệp âm thanh");
+        if (document != null && !video) post.attachment = "Tài liệu · " + document.optString("file_name", "Tệp đính kèm");
+        JSONObject photo = content.optJSONObject("photo");
+        if (photo != null) {
+            post.attachment = "Ảnh";
+            org.json.JSONArray sizes = photo.optJSONArray("sizes");
+            int best = 0;
+            for (int i = 0; sizes != null && i < sizes.length(); i++) {
+                JSONObject size = sizes.optJSONObject(i);
+                if (size == null) continue;
+                int width = Math.max(size.optInt("width"), size.optInt("height"));
+                int file = previewFileId(size.optJSONObject("photo"));
+                if (file != 0 && (best == 0 || (best < 800 && width > best) || (width >= 800 && width < best))) {
+                    best = width;
+                    post.previewFile = file;
+                }
+            }
+        }
+        JSONObject media = content.optJSONObject("video");
+        if (video && media == null) media = document;
+        JSONObject thumbnail = media == null ? null : media.optJSONObject("thumbnail");
+        if (thumbnail != null) post.previewFile = previewFileId(thumbnail.optJSONObject("file"));
+        return post;
+    }
+
+    private static int previewFileId(JSONObject file) {
+        if (file == null) return 0;
+        long size = Math.max(file.optLong("size"), file.optLong("expected_size"));
+        return size > 0 && size <= 2 * 1024 * 1024 ? file.optInt("id") : 0;
+    }
+
+    void downloadPreview(int fileId, java.util.function.Consumer<java.io.File> callback) {
+        if (!running || flow.state() != TelegramAuthorizationFlow.State.READY) return;
+        try {
+            send(request("downloadFile").put("file_id", fileId).put("priority", 1)
+                    .put("offset", 0).put("limit", 0).put("synchronous", true), result -> {
+                JSONObject local = result.optJSONObject("local");
+                if (local == null || !local.optBoolean("is_downloading_completed")) return;
+                java.io.File file = new java.io.File(local.optString("path"));
+                if (file.isFile() && file.length() <= 2 * 1024 * 1024) callback.accept(file);
+            });
+        } catch (org.json.JSONException ignored) {
+            // The post remains readable when its preview cannot be downloaded.
         }
     }
 
@@ -307,7 +660,7 @@ final class TdJsonTelegramSessionClient implements TelegramSessionClient {
             return;
         }
         if (message.has("can_be_saved")) {
-            if (message.optBoolean("can_be_saved", false)) downloadSaveableMessage(message, callback);
+            if (message.optBoolean("can_be_saved", false)) downloadVideoFile(message, callback, false);
             else callback.finished(null, "Bài đăng hạn chế lưu hoặc xuất video");
             return;
         }
@@ -318,7 +671,7 @@ final class TdJsonTelegramSessionClient implements TelegramSessionClient {
             send(request, properties -> {
                 if ("messageProperties".equals(properties.optString("@type"))
                         && properties.optBoolean("can_be_saved", false)) {
-                    downloadSaveableMessage(message, callback);
+                    downloadVideoFile(message, callback, false);
                 } else {
                     callback.finished(null, "Không xác nhận được quyền lưu video của bài đăng");
                 }
@@ -328,19 +681,28 @@ final class TdJsonTelegramSessionClient implements TelegramSessionClient {
         }
     }
 
-    private void downloadSaveableMessage(JSONObject message, MessageVideoResult callback) {
+    private void downloadVideoFile(JSONObject message, MessageVideoResult callback, boolean playback) {
         if (callback.isCancelled()) return;
         if (!running || flow.state() != TelegramAuthorizationFlow.State.READY || logoutCompletion != null) {
             callback.finished(null, "Phiên Telegram không còn sẵn sàng");
             return;
         }
         JSONObject content = message.optJSONObject("content");
-        if (content == null || !"messageVideo".equals(content.optString("@type"))) {
+        JSONObject video = null;
+        if (content != null && "messageVideo".equals(content.optString("@type"))) {
+            video = content.optJSONObject("video");
+        } else if (playback && content != null && "messageDocument".equals(content.optString("@type"))) {
+            JSONObject document = content.optJSONObject("document");
+            if (document != null && document.optString("mime_type").startsWith("video/")) {
+                video = document;
+            }
+        }
+        if (video == null) {
             callback.finished(null, "Bài đăng không chứa video dạng tệp được hỗ trợ");
             return;
         }
-        JSONObject video = content.optJSONObject("video");
-        JSONObject file = video == null ? null : video.optJSONObject("video");
+        JSONObject file = video.optJSONObject("video");
+        if (file == null && playback) file = video.optJSONObject("document");
         if (file == null) {
             callback.finished(null, "Không nhận được metadata video từ TDLib");
             return;
@@ -355,7 +717,22 @@ final class TdJsonTelegramSessionClient implements TelegramSessionClient {
             callback.finished(null, "Video không có file ID");
             return;
         }
-        downloads.put(id, callback);
+        if (size > 0) {
+            JSONObject local = file.optJSONObject("local");
+            long localBytes = local == null ? 0 : Math.max(0, local.optLong("downloaded_size"));
+            long remaining = Math.max(0, size - localBytes);
+            try {
+                StorageSpace.require(context, context.getNoBackupFilesDir(),
+                        remaining + (playback ? 0 : size) + StorageSpace.VIDEO_RESERVE);
+            } catch (java.io.IOException insufficient) {
+                callback.finished(null, insufficient.getMessage());
+                return;
+            }
+        }
+        if (downloads.putIfAbsent(id, callback) != null) {
+            callback.finished(null, "Video đang được tải trong một thao tác khác. Hãy thử lại sau.");
+            return;
+        }
         try {
             JSONObject request = request("downloadFile");
             request.put("file_id", id);

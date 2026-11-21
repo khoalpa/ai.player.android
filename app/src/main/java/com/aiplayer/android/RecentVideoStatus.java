@@ -3,13 +3,15 @@ package com.aiplayer.android;
 import java.util.List;
 import java.util.Objects;
 
+import static com.aiplayer.android.PlayerAppearance.StatusIcon.*;
+
 final class RecentVideoStatus {
     final String text;
-    final boolean warning;
+    final PlayerAppearance.StatusIcon icon;
 
-    RecentVideoStatus(String text, boolean warning) {
+    RecentVideoStatus(String text, PlayerAppearance.StatusIcon icon) {
         this.text = text;
-        this.warning = warning;
+        this.icon = icon;
     }
 
     static final class Summary {
@@ -43,21 +45,22 @@ final class RecentVideoStatus {
     static RecentVideoStatus from(VideoSession.Task failed, int total, int translated) {
         if (total == 0) {
             return failed == VideoSession.Task.TRANSCRIPT
-                    ? new RecentVideoStatus("Tạo transcript lỗi", true)
-                    : new RecentVideoStatus("Chưa có transcript", false);
+                    ? new RecentVideoStatus("Tạo transcript lỗi", ERROR)
+                    : new RecentVideoStatus("Chưa có transcript", NEUTRAL);
         }
         if (failed == VideoSession.Task.TRANSCRIPT) {
-            return new RecentVideoStatus("Có transcript · Tạo lại transcript lỗi", true);
+            return new RecentVideoStatus("Có transcript · Tạo lại transcript lỗi", ERROR);
         }
-        if (translated == total) return new RecentVideoStatus("Có transcript · Đã dịch", false);
+        if (translated == total) return new RecentVideoStatus("Có transcript · Đã dịch", SUCCESS);
         if (translated > 0) {
             String progress = "Có transcript · Dịch " + translated + "/" + total + " đoạn";
             return new RecentVideoStatus(failed == VideoSession.Task.TRANSLATION
-                    ? progress + " · Lần dịch gần nhất bị lỗi" : progress, true);
+                    ? progress + " · Lần dịch gần nhất bị lỗi" : progress,
+                    failed == VideoSession.Task.TRANSLATION ? ERROR : WARNING);
         }
         if (failed == VideoSession.Task.TRANSLATION) {
-            return new RecentVideoStatus("Có transcript · Dịch lỗi", true);
+            return new RecentVideoStatus("Có transcript · Dịch lỗi", ERROR);
         }
-        return new RecentVideoStatus("Có transcript · Chưa dịch", false);
+        return new RecentVideoStatus("Có transcript · Chưa dịch", SUCCESS);
     }
 }

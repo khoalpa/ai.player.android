@@ -10,6 +10,8 @@ final class AppSettings {
     private static final String JAPANESE_DEFAULT_MIGRATED = "japaneseDefaultMigrated";
     static final int DEFAULT_SOURCE_VOLUME = 70;
     static final int DEFAULT_DUBBING_VOLUME = 100;
+    static final int SUBTITLE_OPACITY_STEP = 5;
+    static final int DEFAULT_SUBTITLE_OPACITY = 75;
 
     enum SubtitleColor {
         WHITE("Trắng", 0xffffffff),
@@ -34,18 +36,51 @@ final class AppSettings {
         }
     }
 
+    enum SubtitleBackground {
+        BLACK("Đen", 0xff000000),
+        CHARCOAL("Xám đậm", 0xff333333),
+        NAVY("Xanh đen", 0xff172033),
+        WHITE("Trắng", 0xffffffff);
+
+        final String label;
+        final int argb;
+
+        SubtitleBackground(String label, int argb) {
+            this.label = label;
+            this.argb = argb;
+        }
+
+        static SubtitleBackground fromArgb(int argb) {
+            for (SubtitleBackground color : values()) {
+                if (color.argb == argb) return color;
+            }
+            return BLACK;
+        }
+
+        int withOpacity(int percent) {
+            int alpha = (255 * percent + 99) / 100;
+            return (alpha << 24) | (argb & 0x00ffffff);
+        }
+    }
+
     String sourceLanguage = "ja";
     String targetLanguage = "vi";
     int sourceVolume = DEFAULT_SOURCE_VOLUME;
     int dubbingVolume = DEFAULT_DUBBING_VOLUME;
     int subtitleSize = 16;
     SubtitleColor subtitleColor = SubtitleColor.WHITE;
+    SubtitleBackground subtitleBackground = SubtitleBackground.BLACK;
+    int subtitleOpacity = DEFAULT_SUBTITLE_OPACITY;
     int colorMode;
     boolean raisedControls = true;
     int fontSize = 1;
 
     int textSize(int base) {
-        return base + (fontSize - 1) * 2;
+        return base + (fontSize - 2) * 2;
+    }
+
+    int controlSpacing(int base) {
+        return fontSize == 0 ? Math.max(0, base - 2) : base;
     }
 
     static AppSettings load(Context context) {
@@ -57,6 +92,11 @@ final class AppSettings {
         settings.dubbingVolume = prefs.getInt("dubbingVolume", settings.dubbingVolume);
         settings.subtitleSize = prefs.getInt("subtitleSize", settings.subtitleSize);
         settings.subtitleColor = SubtitleColor.fromArgb(prefs.getInt("subtitleColor", SubtitleColor.WHITE.argb));
+        settings.subtitleBackground = SubtitleBackground.fromArgb(
+                prefs.getInt("subtitleBackground", SubtitleBackground.BLACK.argb));
+        int opacity = prefs.getInt("subtitleOpacity", DEFAULT_SUBTITLE_OPACITY);
+        settings.subtitleOpacity = Math.round(Math.max(0, Math.min(100, opacity))
+                / (float) SUBTITLE_OPACITY_STEP) * SUBTITLE_OPACITY_STEP;
         settings.colorMode = Math.max(0, Math.min(2, prefs.getInt("colorMode", 0)));
         settings.raisedControls = prefs.getBoolean("raisedControls", true);
         settings.fontSize = Math.max(0, Math.min(2, prefs.getInt("fontSize", 1)));
@@ -81,6 +121,8 @@ final class AppSettings {
                 .putInt("dubbingVolume", dubbingVolume)
                 .putInt("subtitleSize", subtitleSize)
                 .putInt("subtitleColor", subtitleColor.argb)
+                .putInt("subtitleBackground", subtitleBackground.argb)
+                .putInt("subtitleOpacity", subtitleOpacity)
                 .putInt("colorMode", colorMode)
                 .putBoolean("raisedControls", raisedControls)
                 .putInt("fontSize", fontSize)

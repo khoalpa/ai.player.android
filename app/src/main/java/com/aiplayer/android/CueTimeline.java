@@ -12,6 +12,13 @@ final class CueTimeline {
             if (this == SOURCE) return cue.sourceText;
             return cue.hasTranslation() ? cue.targetText : "";
         }
+
+        String speechLanguage(TranscriptCue cue, String source, String target) {
+            if (cue == null || this == OFF) return null;
+            if (this == SOURCE) return source;
+            if (!cue.hasTranslation()) return null;
+            return cue.translationOrigin == TranscriptCue.TranslationOrigin.ORIGINAL ? source : target;
+        }
     }
 
     private final List<TranscriptCue> cues;

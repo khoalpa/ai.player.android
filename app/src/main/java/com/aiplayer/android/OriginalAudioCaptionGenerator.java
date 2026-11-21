@@ -423,7 +423,7 @@ final class OriginalAudioCaptionGenerator {
 
     private TranscriptCue copyCue(TranscriptCue cue, long startMs, long endMs) {
         TranscriptCue copy = new TranscriptCue(startMs, endMs, cue.sourceText);
-        copy.targetText = cue.targetText;
+        copy.setTranslation(cue.targetText, cue.translationOrigin);
         return copy;
     }
 

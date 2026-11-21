@@ -13,6 +13,7 @@ import java.util.function.Consumer;
 final class CueSpeech {
     private final TextToSpeech engine;
     private final Consumer<String> status;
+    private final Runnable playbackChanged;
     private boolean ready;
     private boolean initializing = true;
     private TranscriptCue lastCue;
@@ -20,17 +21,27 @@ final class CueSpeech {
     private String lastLanguage;
     private final Handler main = new Handler(Looper.getMainLooper());
     private String activeUtterance;
+    private boolean speaking;
     private long utteranceSequence;
 
     CueSpeech(Context context, Consumer<String> status) {
+        this(context, status, () -> {});
+    }
+
+    CueSpeech(Context context, Consumer<String> status, Runnable playbackChanged) {
         this.status = status;
+        this.playbackChanged = playbackChanged;
         engine = new TextToSpeech(context, result -> main.post(() -> {
             ready = result == TextToSpeech.SUCCESS;
             initializing = false;
         }));
         engine.setOnUtteranceProgressListener(new UtteranceProgressListener() {
             @Override
-            public void onStart(String id) {}
+            public void onStart(String id) {
+                main.post(() -> {
+                    if (id.equals(activeUtterance)) setSpeaking(true);
+                });
+            }
 
             @Override
             public void onDone(String id) {
@@ -58,8 +69,19 @@ final class CueSpeech {
         main.post(() -> {
             if (!id.equals(activeUtterance)) return;
             activeUtterance = null;
+            setSpeaking(false);
             if (failed) status.accept("Không đọc được đoạn hiện tại.");
         });
+    }
+
+    boolean isSpeaking() {
+        return speaking;
+    }
+
+    private void setSpeaking(boolean speaking) {
+        if (this.speaking == speaking) return;
+        this.speaking = speaking;
+        playbackChanged.run();
     }
 
     boolean supports(String language) {
@@ -80,10 +102,7 @@ final class CueSpeech {
         lastCue = cue;
         lastText = text;
         lastLanguage = language;
-        if (engine.setLanguage(Locale.forLanguageTag(language)) < 0) {
-            status.accept("Chưa có giọng đọc cho ngôn ngữ " + language + ".");
-            return;
-        }
+        if (engine.setLanguage(Locale.forLanguageTag(language)) < 0) return;
         speak(text, volume);
     }
 
@@ -110,9 +129,10 @@ final class CueSpeech {
     }
 
     void stop() {
-        boolean wasSpeaking = activeUtterance != null;
+        boolean hadUtterance = activeUtterance != null;
         activeUtterance = null;
-        if (wasSpeaking) engine.stop();
+        if (hadUtterance) engine.stop();
+        setSpeaking(false);
         lastCue = null;
     }
 

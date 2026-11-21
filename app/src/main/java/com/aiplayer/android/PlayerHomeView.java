@@ -49,23 +49,20 @@ final class PlayerHomeView extends ScrollView {
     private boolean closed;
 
     PlayerHomeView(Context context, AppSettings settings, Runnable open,
-                   Runnable library, Consumer<Uri> playRecent) {
+                   Runnable telegram, Consumer<Uri> playRecent) {
         super(context);
         this.settings = settings;
         this.playRecent = playRecent;
         setVerticalScrollBarEnabled(false);
         LinearLayout content = column();
-        content.setPadding(dp(20), dp(16), dp(20), dp(20));
-        int accent = context.getColorStateList(R.color.primary_button_background).getDefaultColor();
-        int accentText = context.getColorStateList(R.color.primary_button_foreground).getDefaultColor();
+        content.setPadding(dp(PlayerAppearance.HORIZONTAL_INSET_DP), dp(PlayerAppearance.GROUP_GAP_DP), dp(PlayerAppearance.HORIZONTAL_INSET_DP), dp(PlayerAppearance.HORIZONTAL_INSET_DP));
         int surface = PlayerAppearance.color(context, android.R.attr.colorBackgroundFloating);
-        int foreground = context.getColorStateList(R.color.control_icon_foreground).getDefaultColor();
-        addAction(content, "Mở video", R.drawable.ic_control_open, accent, accentText, 0, open);
-        addAction(content, "Video đã lưu", R.drawable.ic_control_library, surface, foreground, 12, library);
+        addAction(content, "Mở video", R.drawable.ic_control_open, PlayerAppearance.ButtonRole.PRIMARY, 0, open);
+        addAction(content, "Telegram", R.drawable.ic_control_telegram, PlayerAppearance.ButtonRole.SECONDARY, PlayerAppearance.CONTROL_GAP_DP, telegram);
 
         recent = column();
         LinearLayout.LayoutParams section = new LinearLayout.LayoutParams(-1, -2);
-        section.topMargin = dp(20);
+        section.topMargin = dp(PlayerAppearance.GROUP_GAP_DP);
         content.addView(recent, section);
         TextView heading = label(16, true);
         heading.setText("Video gần đây");
@@ -76,7 +73,7 @@ final class PlayerHomeView extends ScrollView {
 
         taskSection = column();
         LinearLayout.LayoutParams taskParams = new LinearLayout.LayoutParams(-1, -2);
-        taskParams.topMargin = dp(20);
+        taskParams.topMargin = dp(PlayerAppearance.GROUP_GAP_DP);
         content.addView(taskSection, taskParams);
         taskHeading = label(16, true);
         taskHeading.setText("Tác vụ gần đây");
@@ -96,15 +93,11 @@ final class PlayerHomeView extends ScrollView {
         taskCard.addView(taskDetail);
         taskAction = new Button(context);
         taskAction.setAllCaps(false);
-        taskAction.setTextSize(settings.textSize(14));
-        taskAction.setTextColor(foreground);
+        PlayerAppearance.styleButton(taskAction, PlayerAppearance.ButtonRole.ACCENT, settings);
         taskAction.setMinHeight(dp(48));
         taskAction.setMinimumHeight(dp(48));
-        taskAction.setStateListAnimator(null);
-        taskAction.setBackgroundTintList(null);
-        taskAction.setBackground(ripple(PlayerAppearance.color(context, R.attr.playerSelection), dp(10)));
         LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(-2, -2);
-        actionParams.topMargin = dp(4);
+        actionParams.topMargin = dp(PlayerAppearance.CONTROL_GAP_DP);
         taskCard.addView(taskAction, actionParams);
         taskSection.setVisibility(GONE);
         addView(content, new FrameLayout.LayoutParams(-1, -2, Gravity.CENTER_HORIZONTAL));
@@ -144,7 +137,6 @@ final class PlayerHomeView extends ScrollView {
                                Function<Uri, RecentVideoStatus> activeStatus) {
         Context context = getContext();
         int surface = PlayerAppearance.color(context, android.R.attr.colorBackgroundFloating);
-        int foreground = context.getColorStateList(R.color.control_icon_foreground).getDefaultColor();
         LinearLayout card = new LinearLayout(context);
         card.setGravity(Gravity.CENTER_VERTICAL);
         card.setPadding(dp(10), dp(8), dp(12), dp(8));
@@ -167,7 +159,7 @@ final class PlayerHomeView extends ScrollView {
         watched.setProgressBackgroundTintList(ColorStateList.valueOf(
                 PlayerAppearance.color(context, R.attr.playerSelection)));
         watched.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-        watched.setVisibility(GONE);
+        watched.setVisibility(INVISIBLE);
         preview.addView(watched, new LinearLayout.LayoutParams(-1, dp(3)));
 
         LinearLayout details = column();
@@ -176,40 +168,55 @@ final class PlayerHomeView extends ScrollView {
         detailsParams.setMarginEnd(dp(8));
         card.addView(details, detailsParams);
         TextView filename = label(14, true);
-        filename.setMaxLines(2);
-        filename.setEllipsize(TextUtils.TruncateAt.END);
+        filename.setSingleLine(true);
+        filename.setEllipsize(TextUtils.TruncateAt.MIDDLE);
         details.addView(filename, new LinearLayout.LayoutParams(-1, -2));
         TextView timestamp = label(12, false);
-        details.addView(timestamp);
+        timestamp.setSingleLine(true);
+        timestamp.setEllipsize(TextUtils.TruncateAt.END);
+        details.addView(timestamp, new LinearLayout.LayoutParams(-1, -2));
         TextView processing = label(12, false);
-        processing.setVisibility(GONE);
+        processing.setSingleLine(true);
+        processing.setEllipsize(TextUtils.TruncateAt.END);
+        processing.setMinHeight(dp(16));
+        processing.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        processing.setCompoundDrawablePadding(dp(4));
         details.addView(processing, new LinearLayout.LayoutParams(-1, -2));
 
         ImageView play = new ImageView(context);
         play.setImageResource(R.drawable.ic_home_play);
-        play.setImageTintList(ColorStateList.valueOf(foreground));
+        play.setImageTintList(PlayerAppearance.controlIconTint(context));
         play.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         card.addView(play, new LinearLayout.LayoutParams(dp(24), dp(24)));
         details.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
 
         boolean canResume = position >= RESUME_LABEL_MIN_MS;
-        String progress = !canResume ? "Chưa xem"
+        String progress = !canResume ? "Chưa phát"
                 : "Tiếp tục từ " + SavedVideosDialog.formatPosition(position);
         String name = video.name != null ? video.name : PlaybackSessionStore.fallbackName(video.uri);
         filename.setText(recentTitle(name));
         timestamp.setText(progress);
         int muted = processing.getCurrentTextColor();
-        int warning = Color.luminance(surface) > 0.5f ? 0xff805000 : 0xffffbf66;
+        int warning = PlayerAppearance.color(context, R.attr.playerIconWarning);
+        int error = PlayerAppearance.color(context, R.attr.playerButtonDangerInk);
         class StatusUpdate implements Runnable {
             RecentVideoStatus saved;
+            PlayerAppearance.StatusIcon shownIcon;
 
             @Override public void run() {
                 RecentVideoStatus status = activeStatus.apply(video.uri);
                 if (status == null) status = saved;
-                processing.setVisibility(status == null ? GONE : VISIBLE);
+                processing.setVisibility(status == null ? INVISIBLE : VISIBLE);
                 String label = status == null ? "" : status.text;
                 if (!TextUtils.equals(processing.getText(), label)) processing.setText(label);
-                int color = status != null && status.warning ? warning : muted;
+                PlayerAppearance.StatusIcon icon = status == null ? null : status.icon;
+                if (icon != shownIcon) {
+                    if (icon == null) processing.setCompoundDrawablesRelative(null, null, null, null);
+                    else icon.apply(processing);
+                    shownIcon = icon;
+                }
+                int color = icon == PlayerAppearance.StatusIcon.ERROR ? error
+                        : icon == PlayerAppearance.StatusIcon.WARNING ? warning : muted;
                 if (processing.getCurrentTextColor() != color) processing.setTextColor(color);
                 card.setContentDescription("Phát " + filename.getText() + ", " + timestamp.getText()
                         + (status == null ? "" : ", " + status.text));
@@ -221,6 +228,7 @@ final class PlayerHomeView extends ScrollView {
 
         thumbnail.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
         thumbnail.setImageResource(R.drawable.ic_control_library);
+        thumbnail.setImageTintList(PlayerAppearance.controlIconTint(context));
         int generation = previewGeneration;
         previewRequests.add(durations.submit(() -> {
             long durationMs = duration.applyAsLong(video.uri);
@@ -257,6 +265,7 @@ final class PlayerHomeView extends ScrollView {
                 }
                 if (frame != null) {
                     thumbnail.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                    thumbnail.setImageTintList(null);
                     thumbnail.setImageBitmap(frame);
                 }
             });
@@ -309,23 +318,19 @@ final class PlayerHomeView extends ScrollView {
         durations.shutdownNow();
     }
 
-    private void addAction(LinearLayout parent, String text, int icon, int fill, int foreground,
+    private void addAction(LinearLayout parent, String text, int icon, PlayerAppearance.ButtonRole role,
                            int gap, Runnable action) {
         Button button = new Button(getContext());
         button.setAllCaps(false);
         button.setText(text);
+        PlayerAppearance.styleButton(button, role, settings);
         button.setTextSize(settings.textSize(16));
-        button.setTextColor(foreground);
         button.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
         button.setMinimumHeight(dp(52));
         button.setMinHeight(dp(52));
         button.setPaddingRelative(dp(16), dp(8), dp(16), dp(8));
         button.setCompoundDrawablesRelativeWithIntrinsicBounds(icon, 0, R.drawable.ic_home_chevron, 0);
         button.setCompoundDrawablePadding(dp(14));
-        button.setCompoundDrawableTintList(ColorStateList.valueOf(foreground));
-        button.setStateListAnimator(null);
-        button.setBackgroundTintList(null);
-        button.setBackground(ripple(fill, dp(14)));
         button.setOnClickListener(view -> action.run());
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
         params.topMargin = dp(gap);

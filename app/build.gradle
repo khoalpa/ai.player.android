@@ -20,7 +20,7 @@ def worktree = commit.isEmpty() ? null : gitMetadata(["status", "--porcelain", "
 
 android {
     namespace = "com.aiplayer.android"
-    compileSdk = 35
+    compileSdk = 36
     buildFeatures {
         buildConfig = true
     }
@@ -39,7 +39,7 @@ android {
     defaultConfig {
         applicationId = "com.aiplayer.android"
         minSdk = 26
-        targetSdk = 35
+        targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
         buildConfigField "String", "GIT_COMMIT", '"' + commit + '"'
@@ -57,14 +57,19 @@ androidComponents {
 }
 
 dependencies {
+    implementation "androidx.activity:activity:1.13.0"
     implementation "com.google.mlkit:translate:17.0.3"
+    implementation "org.jsoup:jsoup:1.19.1"
     implementation "com.google.mlkit:language-id:17.0.6"
     implementation "androidx.media3:media3-exoplayer:1.8.0"
+    implementation "androidx.media3:media3-exoplayer-hls:1.8.0"
+    implementation "androidx.media3:media3-exoplayer-dash:1.8.0"
     implementation "androidx.media3:media3-ui:1.8.0"
     implementation "net.java.dev.jna:jna:5.18.1@aar"
     implementation "com.alphacephei:vosk-android:0.3.75@aar"
 
     testImplementation "junit:junit:4.13.2"
+    testImplementation "org.json:json:20240303"
 }
 
 tasks.withType(JavaCompile).configureEach {

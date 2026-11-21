@@ -18,7 +18,7 @@ final class TranslationBatch {
         all = cues;
         replacingLanguage = !target.equals(previousTarget);
         for (TranscriptCue cue : cues) {
-            if ((selected == null || cue == selected) && (replacingLanguage || !cue.hasTranslation())) {
+            if (selected == null ? replacingLanguage || !cue.hasTranslation() : cue == selected) {
                 input.add(cue);
             }
         }
@@ -26,9 +26,11 @@ final class TranslationBatch {
 
     void accept(int index, String text) {
         if (!accepted && replacingLanguage) {
-            for (TranscriptCue cue : all) cue.targetText = null;
+            for (TranscriptCue cue : all) {
+                cue.setTranslation(null, TranscriptCue.TranslationOrigin.AUTOMATIC);
+            }
         }
         accepted = true;
-        input.get(index).targetText = text;
+        input.get(index).setTranslation(text, TranscriptCue.TranslationOrigin.AUTOMATIC);
     }
 }

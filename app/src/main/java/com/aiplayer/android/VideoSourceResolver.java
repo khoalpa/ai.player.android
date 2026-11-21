@@ -23,7 +23,7 @@ final class VideoSourceResolver {
     private static final Pattern TELEGRAM_WITHOUT_SCHEME = Pattern.compile(
             "^(?:t\\.me|www\\.t\\.me|telegram\\.me)/", Pattern.CASE_INSENSITIVE);
     private static final Pattern TELEGRAM_POST = Pattern.compile(
-            "^/(?:s/)?([A-Za-z][A-Za-z0-9_]{3,31})/([1-9][0-9]*)/?$");
+            "^/(?:s/)?([A-Za-z][A-Za-z0-9_]{3,31})/(?:[1-9][0-9]*/)?([1-9][0-9]*)/?$");
     private static final Pattern TELEGRAM_PRIVATE_POST = Pattern.compile(
             "^/c/[1-9][0-9]*/(?:[1-9][0-9]*/)?[1-9][0-9]*/?$");
     private VideoSourceResolver() {}

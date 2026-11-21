@@ -18,13 +18,13 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21'
       # GitHub's Ubuntu Android runner already provides command-line SDK tools.
       # Avoid setup-android@v3 installing the obsolete 'tools' SDK package.
       - name: Configure Android SDK
         run: |
           echo "ANDROID_HOME=${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}" >> "$GITHUB_ENV"
-          "${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-35" "build-tools;35.0.0"
+          "${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-36" "build-tools;36.0.0"
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
       - name: Build pinned TDLib JSONJava and verify JNI bindings
@@ -55,8 +55,23 @@ jobs:
           for flavor in standalone play; do
             apk="app/build/outputs/apk/$flavor/debug/app-$flavor-debug.apk"
             unzip -l "$apk" | grep -F 'lib/arm64-v8a/libtdjsonjava.so'
-            "${ANDROID_HOME}/build-tools/35.0.0/zipalign" -c -P 16 -v 4 "$apk"
+            "${ANDROID_HOME}/build-tools/36.0.0/zipalign" -c -P 16 -v 4 "$apk"
           done
+      - name: Build unsigned release packages
+        if: github.event_name == 'workflow_dispatch'
+        run: >-
+          ./gradlew --no-daemon --stacktrace
+          :app:bundlePlayRelease :app:assembleStandaloneRelease
+      - name: Upload unsigned release packages
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-player-unsigned-release-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            app/build/outputs/bundle/playRelease/app-play-release.aab
+            app/build/outputs/apk/standalone/release/app-standalone-release-unsigned.apk
       - name: Upload reports
         if: always()
         uses: actions/upload-artifact@v4

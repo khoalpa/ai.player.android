@@ -1,13 +1,42 @@
 package com.aiplayer.android;
 
 final class TranscriptCue {
+    enum TranslationOrigin { AUTOMATIC, ORIGINAL, MANUAL }
+
     final long startMs;
     final long endMs;
     String sourceText;
     String targetText;
+    TranslationOrigin translationOrigin = TranslationOrigin.AUTOMATIC;
+    boolean translationNeedsReview;
 
     boolean hasTranslation() {
         return targetText != null && !targetText.trim().isEmpty();
+    }
+
+    boolean canEditTranslation() {
+        return !hasTranslation() || translationOrigin != TranslationOrigin.AUTOMATIC;
+    }
+
+    void setTranslation(String text, TranslationOrigin origin) {
+        targetText = text;
+        translationOrigin = origin;
+        translationNeedsReview = false;
+    }
+
+    void syncTranslationAfterSourceEdit() {
+        if (translationOrigin == TranslationOrigin.ORIGINAL) {
+            setTranslation(sourceText, TranslationOrigin.ORIGINAL);
+        } else if (hasTranslation()) {
+            translationNeedsReview = true;
+        }
+    }
+
+    TranscriptCue copy() {
+        TranscriptCue copy = new TranscriptCue(startMs, endMs, sourceText);
+        copy.setTranslation(targetText, translationOrigin);
+        copy.translationNeedsReview = translationNeedsReview;
+        return copy;
     }
 
     TranscriptCue(long startMs, long endMs, String sourceText) {

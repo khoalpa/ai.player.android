@@ -1,4 +1,6 @@
 <selector xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:state_enabled="false" android:color="?android:attr/textColorSecondary" />
-    <item android:color="?android:attr/textColorPrimary" />
+    <item android:state_enabled="false" android:color="?attr/playerButtonDisabledInk" />
+    <item android:state_checked="true" android:color="?attr/playerButtonAccentInk" />
+    <item android:state_selected="true" android:color="?attr/playerButtonAccentInk" />
+    <item android:color="?attr/playerIconNeutral" />
 </selector>

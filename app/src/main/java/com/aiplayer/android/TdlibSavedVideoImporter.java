@@ -34,8 +34,7 @@ final class TdlibSavedVideoImporter {
                 if (length <= 0 || length > VideoUrlPolicy.MAX_BYTES)
                     throw new IOException("Dung lượng video không hợp lệ hoặc vượt 2 GB");
                 File directory = new SavedVideoStore(context).directory();
-                if (directory.getUsableSpace() < length + 16L * 1024 * 1024)
-                    throw new IOException("Không đủ dung lượng lưu trữ");
+                StorageSpace.require(context, directory, length + StorageSpace.VIDEO_RESERVE);
                 String name = "telegram_" + System.currentTimeMillis() + "_" +
                         UUID.randomUUID().toString().substring(0, 8) + ".mp4";
                 partial = new File(directory, name + ".part");
@@ -48,8 +47,8 @@ final class TdlibSavedVideoImporter {
                     while ((count = source.read(buffer)) != -1) {
                         if (cancelled.getAsBoolean()) throw new IOException("Đã hủy tải video");
                         bytes += count;
-                        if (bytes > VideoUrlPolicy.MAX_BYTES || directory.getUsableSpace() < 1024 * 1024)
-                            throw new IOException("Không đủ dung lượng hoặc video quá lớn");
+                        if (bytes > VideoUrlPolicy.MAX_BYTES) throw new IOException("Video vượt giới hạn 2 GB");
+                        StorageSpace.require(context, directory, count + StorageSpace.WRITE_RESERVE);
                         target.write(buffer, 0, count);
                     }
                     target.getFD().sync();

@@ -1,4 +1,13 @@
 <resources>
     <attr name="playerSelection" format="color" />
     <attr name="playerAccentText" format="color" />
+    <attr name="playerButtonSurface" format="color" />
+    <attr name="playerButtonDisabled" format="color" />
+    <attr name="playerButtonDisabledInk" format="color" />
+    <attr name="playerButtonAccentInk" format="color" />
+    <attr name="playerButtonDanger" format="color" />
+    <attr name="playerButtonDangerInk" format="color" />
+    <attr name="playerIconNeutral" format="color" />
+    <attr name="playerIconSuccess" format="color" />
+    <attr name="playerIconWarning" format="color" />
 </resources>

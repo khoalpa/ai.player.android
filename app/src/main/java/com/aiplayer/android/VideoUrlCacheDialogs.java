@@ -208,14 +208,15 @@ final class VideoUrlCacheDialogs {
 
     private void showVideo(File video, String label, Uri currentVideo) {
         Uri uri = Uri.fromFile(video);
-        AlertDialog.Builder dialog = new PlayerAppearance.DialogBuilder(activity, settings).setTitle(label)
+        AlertDialog.Builder dialog = new PlayerAppearance.DialogBuilder(activity, settings)
+                .destructiveNeutral().setTitle(label)
                 .setPositiveButton("Mở video", (ignored, which) -> {
                     if (cache.contains(uri)) open.accept(uri);
                     else notifyUser("Video đã bị xóa hoặc bộ nhớ không khả dụng.");
                 }).setNegativeButton("Đóng", null);
         if (!uri.equals(currentVideo)) {
             dialog.setNeutralButton("Xóa", (ignored, which) -> new PlayerAppearance.DialogBuilder(activity, settings)
-                    .setTitle("Xóa video đã lưu?")
+                    .positiveRole(PlayerAppearance.ButtonRole.CONFIRM_DELETE).setTitle("Xóa video đã lưu?")
                     .setNegativeButton("Hủy", null)
                     .setPositiveButton("Xóa", (confirmation, button) -> {
                         notifyUser(video.delete() ? "Đã xóa video." : "Không xóa được video.");

@@ -5,6 +5,26 @@ import java.net.URL;
 import static org.junit.Assert.*;
 
 public class VideoUrlPolicyTest {
+    @Test public void directSourceKeyPreservesQueryWithoutStoringItInPlainText() throws Exception {
+        URL original = new URL("https://example.com/video.mp4?token=private-value");
+        URL other = new URL("https://example.com/video.mp4?token=other-value");
+        String key = VideoUrlPolicy.directSourceKey(original);
+        assertEquals(key, VideoUrlPolicy.directSourceKey(new URL(original.toExternalForm())));
+        assertNotEquals(key, VideoUrlPolicy.directSourceKey(other));
+        assertFalse(key.contains("private-value"));
+    }
+
+    @Test public void rejectsStreamingManifestsByPathAndContentType() throws Exception {
+        URL playlist = new URL("https://example.com/video.M3U8?token=abc");
+        URL download = new URL("https://example.com/download");
+        IllegalArgumentException byPath = assertThrows(IllegalArgumentException.class,
+                () -> VideoUrlPolicy.requireDownloadablePath(playlist));
+        IllegalArgumentException byType = assertThrows(IllegalArgumentException.class,
+                () -> VideoUrlPolicy.downloadExtension(download, download, "application/dash+xml"));
+        assertEquals(byPath.getMessage(), byType.getMessage());
+        VideoUrlPolicy.requireDownloadablePath(new URL("https://example.com/video.mp4?name=video.m3u8"));
+    }
+
     @Test public void acceptsHttpsVideoWithQuery() throws Exception {
         URL url = VideoUrlPolicy.requireHttps("https://example.com/a.MP4?token=abc");
         assertEquals(".mp4", VideoUrlPolicy.downloadExtension(url, url, null));

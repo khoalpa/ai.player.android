@@ -52,8 +52,7 @@ final class SharedVideoImporter {
                 }
                 if (claimed > VideoUrlPolicy.MAX_BYTES)
                     throw new IOException("Video vượt giới hạn 2 GB");
-                if (claimed > 0 && dir.getUsableSpace() < claimed + 16L * 1024 * 1024)
-                    throw new IOException("Không đủ dung lượng lưu trữ");
+                if (claimed > 0) StorageSpace.require(context, dir, claimed + StorageSpace.VIDEO_RESERVE);
                 String stem = "shared_" + System.currentTimeMillis() + "_" +
                         UUID.randomUUID().toString().substring(0, 8);
                 partial = new File(dir, stem + ext + ".part");
@@ -68,8 +67,7 @@ final class SharedVideoImporter {
                             copied += count;
                             if (copied > VideoUrlPolicy.MAX_BYTES)
                                 throw new IOException("Video vượt giới hạn 2 GB");
-                            if (dir.getUsableSpace() < 1024 * 1024)
-                                throw new IOException("Không đủ dung lượng lưu trữ");
+                            StorageSpace.require(context, dir, count + StorageSpace.WRITE_RESERVE);
                             out.write(buffer, 0, count);
                         }
                         out.getFD().sync();

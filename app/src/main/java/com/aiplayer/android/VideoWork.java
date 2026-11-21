@@ -29,7 +29,7 @@ final class VideoWork {
     private long savedVersion = -1;
     private String lastStatus;
     private boolean checkpointPending;
-    private Uri deletingTranscript;
+    private Uri transcriptMutation;
     long position;
     // Retained with the current video across Activity recreation. -1 means no pending entry.
     int pendingRecentGrantFlags = -1;
@@ -111,19 +111,33 @@ final class VideoWork {
         }
     }
 
-    Uri deletingTranscript() { return deletingTranscript; }
+    Uri transcriptMutation() { return transcriptMutation; }
+
+    void editTranscriptCue(PlaybackSessionStore.Snapshot snapshot, int index, TranscriptCue edited,
+                           String target, Consumer<PlaybackSessionStore.Snapshot> completed) {
+        transcriptMutation = snapshot.uri;
+        store.editTranscriptCue(snapshot, index, edited, target, updated -> {
+            if (updated != null && updated.uri.equals(session.videoUri())
+                    && updated.identity.equals(session.identity())) {
+                session.applyEditedTranscript(updated);
+            }
+            transcriptMutation = null;
+            completed.accept(updated);
+            releaseIfIdle();
+        });
+    }
 
     void removeTranscript(PlaybackSessionStore.StoredTranscript entry, boolean translationOnly,
                           String sourceLanguage, Consumer<PlaybackSessionStore.Snapshot> completed) {
         Uri uri = entry.snapshot.uri;
-        deletingTranscript = uri;
+        transcriptMutation = uri;
         store.removeTranscript(entry, translationOnly, updated -> {
             Runnable finish = () -> {
                 if (updated != null) {
                     discardResults(uri, translationOnly);
                     if (uri.equals(session.videoUri())) session.open(uri, sourceLanguage, updated);
                 }
-                deletingTranscript = null;
+                transcriptMutation = null;
                 completed.accept(updated);
                 releaseIfIdle();
             };
@@ -187,7 +201,7 @@ final class VideoWork {
     private void saveCheckpoint() {
         main.removeCallbacks(checkpoint);
         checkpointPending = false;
-        if (session.videoUri() != null && !session.videoUri().equals(deletingTranscript)
+        if (session.videoUri() != null && !session.videoUri().equals(transcriptMutation)
                 && savedVersion != session.transcriptVersion()) {
             savedVersion = session.transcriptVersion();
             store.checkpoint(session);
@@ -216,7 +230,7 @@ final class VideoWork {
 
     private void releaseIfIdle() {
         if (instance != this || observer != null || session.busy || serviceRequested
-                || models.pending() || deletingTranscript != null) return;
+                || models.pending() || transcriptMutation != null) return;
         main.removeCallbacksAndMessages(null);
         session.close();
         store.close();

@@ -1,8 +1,10 @@
 package com.aiplayer.android;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertTrue;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -67,5 +69,40 @@ public class CueTimelineTest {
         assertEquals("translated", CueTimeline.Mode.TRANSLATION.text(cue));
         assertEquals("source", CueTimeline.Mode.SOURCE.text(cue));
         assertEquals("", CueTimeline.Mode.OFF.text(cue));
+    }
+
+    @Test
+    public void translatedSpeechUsesSourceVoiceOnlyForExplicitOriginal() {
+        TranscriptCue cue = new TranscriptCue(0, 100, "source");
+        CueTimeline.Mode mode = CueTimeline.Mode.TRANSLATION;
+        assertNull(mode.speechLanguage(cue, "ja", "vi"));
+
+        cue.setTranslation("source", TranscriptCue.TranslationOrigin.ORIGINAL);
+        assertEquals("source", mode.text(cue));
+        assertEquals("ja", mode.speechLanguage(cue, "ja", "vi"));
+        assertNull(mode.speechLanguage(cue, null, "vi"));
+
+        cue.setTranslation("source", TranscriptCue.TranslationOrigin.MANUAL);
+        assertEquals("vi", mode.speechLanguage(cue, "ja", "vi"));
+
+        cue.setTranslation("translated", TranscriptCue.TranslationOrigin.AUTOMATIC);
+        assertEquals("vi", mode.speechLanguage(cue, "ja", "vi"));
+        assertEquals("ja", CueTimeline.Mode.SOURCE.speechLanguage(cue, "ja", "vi"));
+    }
+
+    @Test
+    public void sourceEditRefreshesExplicitOriginalAndFlagsOtherTranslations() {
+        TranscriptCue cue = new TranscriptCue(0, 100, "old");
+        cue.setTranslation("old", TranscriptCue.TranslationOrigin.ORIGINAL);
+        cue.sourceText = "updated";
+        cue.syncTranslationAfterSourceEdit();
+        assertEquals("updated", CueTimeline.Mode.TRANSLATION.text(cue));
+        assertFalse(cue.translationNeedsReview);
+
+        cue.setTranslation("manual", TranscriptCue.TranslationOrigin.MANUAL);
+        cue.sourceText = "revised";
+        cue.syncTranslationAfterSourceEdit();
+        assertEquals("manual", CueTimeline.Mode.TRANSLATION.text(cue));
+        assertTrue(cue.translationNeedsReview);
     }
 }
