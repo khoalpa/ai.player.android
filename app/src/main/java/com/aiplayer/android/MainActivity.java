@@ -2106,6 +2106,14 @@ public final class MainActivity extends ComponentActivity {
     private void showGuide(boolean modelsExpanded) {
         LinearLayout form = form();
         settingsPage("Hướng dẫn", form, false);
+        compactButton(form, "Chính sách quyền riêng tư", () -> {
+            Uri policy = Uri.parse("https://github.com/khoalpa/ai.player.android/blob/main/docs/privacy-policy.md");
+            try {
+                startActivity(new Intent(Intent.ACTION_VIEW, policy));
+            } catch (android.content.ActivityNotFoundException unavailable) {
+                Toast.makeText(this, "Không tìm thấy trình duyệt để mở chính sách.", Toast.LENGTH_SHORT).show();
+            }
+        });
         guideSection(form, "Bắt đầu nhanh",
                 "1. Chọn Mở video và chọn nguồn video.\n"
                         + "2. Chọn Tạo transcript, rồi chọn track âm thanh và ngôn ngữ lời thoại.\n"
