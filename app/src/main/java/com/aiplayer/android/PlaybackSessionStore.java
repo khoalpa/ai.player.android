@@ -49,6 +49,8 @@ final class PlaybackSessionStore {
         boolean suppressCache;
         VideoSession.Task failedTask;
         String failedTarget;
+        boolean contextualTranslation;
+        String translationGlossary = "";
 
         Snapshot(Uri uri, String identity, long position, String source, String target, List<TranscriptCue> cues) {
             this.uri = uri;
@@ -174,6 +176,8 @@ final class PlaybackSessionStore {
         boolean suppressCache = false;
         String failedTarget = null;
         VideoSession.Task failedTask = null;
+        boolean contextualTranslation = false;
+        String translationGlossary = "";
         try {
             String json = sameIdentity ? preferences.getString("cues", "[]") : "[]";
             AtomicFile file = transcriptFile(uri);
@@ -186,6 +190,8 @@ final class PlaybackSessionStore {
                     source = saved.isNull("source") ? null : saved.optString("source", null);
                     target = saved.isNull("target") ? null : saved.optString("target", null);
                     failedTarget = saved.optString("failed_target", null);
+                    contextualTranslation = saved.optBoolean("contextual_translation");
+                    translationGlossary = saved.optString("translation_glossary", "");
                     String task = saved.optString("failed_task");
                     if (VideoSession.Task.TRANSCRIPT.name().equals(task)) failedTask = VideoSession.Task.TRANSCRIPT;
                     if (VideoSession.Task.TRANSLATION.name().equals(task)) failedTask = VideoSession.Task.TRANSLATION;
@@ -198,12 +204,14 @@ final class PlaybackSessionStore {
                         row.getString("source"));
                 cue.wordStarts = row.optJSONArray("word_starts");
                 cue.sentence = row.optBoolean("sentence");
+                cue.sourceEdited = row.optBoolean("source_edited");
                 String text = row.optString("target", "");
                 String origin = row.optString("translation_origin");
                 cue.setTranslation(text, "MANUAL".equals(origin) ? TranscriptCue.TranslationOrigin.MANUAL
                         : "ORIGINAL".equals(origin) ? TranscriptCue.TranslationOrigin.ORIGINAL
                         : TranscriptCue.TranslationOrigin.AUTOMATIC);
                 cue.translationNeedsReview = row.optBoolean("translation_needs_review") && cue.hasTranslation();
+                cue.translationPending = row.optBoolean("translation_pending");
                 cues.add(cue);
             }
         } catch (Exception ex) {
@@ -227,6 +235,8 @@ final class PlaybackSessionStore {
         result.suppressCache = suppressCache;
         result.failedTask = failedTask;
         result.failedTarget = failedTarget;
+        result.contextualTranslation = contextualTranslation;
+        result.translationGlossary = translationGlossary;
         return result;
     }
 
@@ -354,9 +364,11 @@ final class PlaybackSessionStore {
                         result.name = expected.name;
                         result.failedTask = current.failedTask;
                         result.failedTarget = current.failedTarget;
+                        result.contextualTranslation = current.contextualTranslation;
+                        result.translationGlossary = current.translationGlossary;
                         if (result.failedTask == VideoSession.Task.TRANSLATION
                                 && java.util.Objects.equals(target, result.failedTarget)
-                                && result.cues.stream().allMatch(TranscriptCue::hasTranslation)) {
+                                && result.cues.stream().allMatch(cue -> cue.hasTranslation() && !cue.translationPending)) {
                             result.failedTask = null;
                             result.failedTarget = null;
                         }
@@ -392,6 +404,8 @@ final class PlaybackSessionStore {
         state.transcriptOrigin = session.transcriptOrigin();
         state.failedTask = session.failedTask();
         state.failedTarget = session.failedTarget();
+        state.contextualTranslation = session.contextualTranslation();
+        state.translationGlossary = session.translationGlossary();
         IO.execute(() -> {
             synchronized (FILE_LOCK) {
                 state.suppressCache = snapshot.isEmpty()
@@ -411,14 +425,18 @@ final class PlaybackSessionStore {
                         .put("source", cue.sourceText).put("target", cue.targetText)
                         .put("word_starts", cue.wordStarts)
                         .put("sentence", cue.sentence ? Boolean.TRUE : null)
+                        .put("source_edited", cue.sourceEdited ? Boolean.TRUE : null)
                         .put("translation_origin", cue.translationOrigin == TranscriptCue.TranslationOrigin.AUTOMATIC
                                 ? null : cue.translationOrigin.name())
+                        .put("translation_pending", cue.translationPending ? Boolean.TRUE : null)
                         .put("translation_needs_review", cue.translationNeedsReview ? Boolean.TRUE : null));
             }
             JSONObject data = new JSONObject().put("identity", state.identity).put("cues", array)
                     .put("source", state.source).put("target", state.target)
                     .put("transcript_origin", state.transcriptOrigin)
                     .put("transcript_removed", state.suppressCache)
+                    .put("contextual_translation", state.contextualTranslation)
+                    .put("translation_glossary", state.translationGlossary)
                     .put("failed_target", state.failedTarget)
                     .put("failed_task", state.failedTask == null ? null : state.failedTask.name());
             output = file.startWrite();

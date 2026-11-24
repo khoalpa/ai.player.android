@@ -7,7 +7,9 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import android.os.SystemClock;
 import android.util.AtomicFile;
+import android.util.Log;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -15,25 +17,38 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+import java.util.regex.Pattern;
 
 final class ContextTranslationClient implements AutoCloseable {
-    private static final int MAX_CUES = 20;
+    private static final String TAG = "ContextTranslation";
+    private static final int MAX_CUES = 12;
+    private static final int GUIDE_TOKENS = 384;
+    private static final int TRANSLATION_TOKENS = 1600;
     private static final int MAX_CHUNK_CHARS = 1800;
     private static final int MAX_FRAGMENT_CHARS = 600;
     private static final int MAX_GUIDE_CHARS = 3000;
     private static final int NEIGHBORS = 3;
+    private static final Pattern ADDRESS = Pattern.compile(
+            "(?iu)\\b(anh|chị|em|cháu|con|cậu|cô|chú|bác|ông|bà|mẹ|cha|bố|tao|mày|tớ|tôi|ngài)\\b");
+    private static final Pattern NAME = Pattern.compile(
+            "(?U)(?<![\\p{L}])\\p{Lu}\\p{Ll}+(?:\\s+\\p{Lu}\\p{Ll}+)+|(?<=\\p{Ll}\\s)\\p{Lu}\\p{Ll}+");
+    private static final Pattern WORD_SEPARATOR = Pattern.compile("[^\\p{L}\\p{M}\\p{N}]+");
     private static final String STRING_RULE = "\nstring ::= \"\\\"\" ([^\"\\\\\\x00-\\x1f] | \"\\\\\" [\"\\\\/bfnrt])* \"\\\"\"\n";
     private static final String GUIDE_GRAMMAR = "root ::= \"{\\\"guide\\\":\" string \"}\"\n" + STRING_RULE;
     private final ContextModelStore store;
     private final String glossary;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    private volatile long playbackPositionMs;
     private long active;
     private boolean closed;
     private AtomicFile resultCheckpoint;
@@ -43,11 +58,18 @@ final class ContextTranslationClient implements AutoCloseable {
         this.glossary = glossary;
     }
 
+    void prioritize(long positionMs) {
+        playbackPositionMs = positionMs;
+    }
+
     Task<List<String>> translate(List<TranscriptCue> all, List<TranscriptCue> selected,
                                  Runnable modelLoading,
                                  BiConsumer<Integer, Integer> analysisProgress,
+                                 Runnable refinementStarting,
+                                 Consumer<List<String>> draft,
                                  Consumer<List<String>> progress) {
         List<String> sources = new ArrayList<>(all.size());
+        List<Long> ends = new ArrayList<>(all.size());
         Map<TranscriptCue, Integer> indices = new IdentityHashMap<>();
         Map<TranscriptCue, Integer> counts = new IdentityHashMap<>();
         for (TranscriptCue cue : all) {
@@ -55,6 +77,7 @@ final class ContextTranslationClient implements AutoCloseable {
             List<String> fragments = splitCue(cue.sourceText);
             counts.put(cue, fragments.size());
             sources.addAll(fragments);
+            for (String ignored : fragments) ends.add(cue.endMs);
         }
         List<Integer> targets = new ArrayList<>(selected.size());
         List<Integer> cueEnds = new ArrayList<>(selected.size());
@@ -66,7 +89,8 @@ final class ContextTranslationClient implements AutoCloseable {
         return Tasks.call(executor, () -> {
             try {
                 System.loadLibrary("aiplayer_context");
-                return joinCues(run(sources, targets, modelLoading, analysisProgress,
+                return joinCues(run(sources, ends, targets, modelLoading, analysisProgress, refinementStarting,
+                        partial -> draft.accept(joinCues(partial, cueEnds)),
                         partial -> progress.accept(joinCues(partial, cueEnds))), cueEnds);
             } catch (LinkageError error) {
                 throw new IOException("Bản cài đặt này chưa có bộ dịch theo ngữ cảnh ARM64.", error);
@@ -104,69 +128,150 @@ final class ContextTranslationClient implements AutoCloseable {
         int start = 0;
         for (int end : cueEnds) {
             if (end > fragments.size()) break;
-            cues.add(String.join(" ", fragments.subList(start, end)));
+            List<String> parts = fragments.subList(start, end);
+            cues.add(parts.contains(null) ? null : String.join(" ", parts));
             start = end;
         }
         return cues;
     }
 
-    private List<String> run(List<String> sources, List<Integer> targets,
+    private List<String> run(List<String> sources, List<Long> ends, List<Integer> targets,
                              Runnable modelLoading,
-                             BiConsumer<Integer, Integer> analysisProgress,
+                             BiConsumer<Integer, Integer> contextProgress,
+                              Runnable refinementStarting,
+                              Consumer<List<String>> draftProgress,
                              Consumer<List<String>> progress) throws Exception {
+        if (targets.isEmpty()) return new ArrayList<>();
+        List<Integer> boundaries = groupBoundaries(sources, MAX_CUES, MAX_CHUNK_CHARS);
+        AtomicFile guideCheckpoint = checkpoint(sources, new JSONArray());
+        resultCheckpoint = checkpoint(sources, new JSONArray(targets));
+        JSONObject savedGuide = readCheckpoint(guideCheckpoint);
+        String guide = savedGuide.optString("guide", "");
+        JSONArray savedResults = readCheckpoint(resultCheckpoint).optJSONArray("completed");
+        List<String> results = new ArrayList<>(targets.size());
+        for (int i = 0; i < targets.size(); i++) {
+            results.add(savedResults == null || savedResults.isNull(i) ? null : savedResults.optString(i));
+        }
+        progress.accept(new ArrayList<>(results));
+        if (!results.contains(null)) return results;
+        modelLoading.run();
+        long started = SystemClock.elapsedRealtime();
+        try {
+            loadModel();
+        } finally {
+            logDuration("model_load", started);
+        }
+
+        List<List<Integer>> pending = new ArrayList<>();
+        int index = 0;
+        for (int chunk = 1; chunk < boundaries.size(); chunk++) {
+            List<Integer> group = new ArrayList<>();
+            while (index < targets.size() && targets.get(index) < boundaries.get(chunk)) {
+                if (results.get(index) == null) group.add(index);
+                index++;
+            }
+            if (!group.isEmpty()) pending.add(group);
+        }
+        int total = pending.size();
+        int analyzed = savedGuide.optInt("analyzed", 0);
+        List<String> early = new ArrayList<>(results);
+        List<Integer> earlyGroup = analyzed == 0 && total > 1
+                ? pending.get(priorityGroup(pending, targets, ends, playbackPositionMs)) : null;
+        int analysisTotal = boundaries.size() - 1;
+        if (earlyGroup != null) {
+            int[] offset = {0};
+            translateTargets(sources, targets, earlyGroup, guide, batch -> {
+                for (String text : batch) early.set(earlyGroup.get(offset[0]++), text);
+                draftProgress.accept(new ArrayList<>(early));
+            });
+        }
+        for (int chunk = analyzed; chunk < analysisTotal && analysisTotal > 1; chunk++) {
+            contextProgress.accept(chunk + 1, analysisTotal);
+            started = SystemClock.elapsedRealtime();
+            try {
+                guide = analyzeGroup(sources, boundaries.get(chunk), boundaries.get(chunk + 1), guide);
+                saveCheckpoint(guideCheckpoint, savedGuide.put("guide", guide).put("analyzed", chunk + 1));
+            } finally {
+                logDuration("guide_update", started);
+            }
+        }
+        refinementStarting.run();
+        while (!pending.isEmpty()) {
+            int next = priorityGroup(pending, targets, ends, playbackPositionMs);
+            List<Integer> group = pending.remove(next);
+            List<Integer> refine = new ArrayList<>(group);
+            if (group == earlyGroup && !guide.isEmpty()) {
+                Set<String> guideTerms = new HashSet<>(java.util.Arrays.asList(
+                        WORD_SEPARATOR.split((guide + " " + glossary).toLowerCase(Locale.ROOT))));
+                refine.removeIf(i -> {
+                    String text = early.get(i);
+                    if (text == null || needsContextReview(sources.get(targets.get(i)), text, guideTerms)) return false;
+                    results.set(i, text);
+                    return true;
+                });
+                saveCheckpoint(resultCheckpoint, new JSONObject().put("completed", new JSONArray(results)));
+                progress.accept(new ArrayList<>(results));
+            }
+            int[] offset = {0};
+            String finalGuide = guide;
+            translateTargets(sources, targets, refine, finalGuide, batch -> {
+                for (String text : batch) results.set(refine.get(offset[0]++), text);
+                saveCheckpoint(resultCheckpoint, new JSONObject().put("completed", new JSONArray(results)));
+                progress.accept(new ArrayList<>(results));
+            });
+        }
+        return results;
+    }
+
+    static boolean needsContextReview(String source, String translation, Set<String> guideTerms) {
+        return ADDRESS.matcher(translation).find() || NAME.matcher(source).find()
+                || NAME.matcher(translation).find()
+                || java.util.Arrays.stream(WORD_SEPARATOR.split((source + " " + translation).toLowerCase(Locale.ROOT)))
+                        .anyMatch(word -> word.length() >= 4 && guideTerms.contains(word))
+                || source.codePoints().anyMatch(codePoint -> {
+                    Character.UnicodeScript script = Character.UnicodeScript.of(codePoint);
+                    return script == Character.UnicodeScript.HAN || script == Character.UnicodeScript.HANGUL
+                            || script == Character.UnicodeScript.HIRAGANA || script == Character.UnicodeScript.KATAKANA;
+                });
+    }
+
+    private void translateTargets(List<String> sources, List<Integer> targets, List<Integer> group,
+                                  String guide, BatchCompletion complete) throws Exception {
+        if (group.isEmpty()) return;
+        List<Integer> requested = new ArrayList<>(group.size());
+        for (int index : group) requested.add(targets.get(index));
+        int start = Math.max(0, requested.get(0) - NEIGHBORS);
+        int end = Math.min(sources.size(), requested.get(requested.size() - 1) + NEIGHBORS + 1);
+        translateGroup(sources, requested, guide, start, end, complete);
+    }
+
+    static int priorityGroup(List<List<Integer>> groups, List<Integer> targets, List<Long> ends, long positionMs) {
+        for (int i = 0; i < groups.size(); i++) {
+            List<Integer> group = groups.get(i);
+            if (ends.get(targets.get(group.get(group.size() - 1))) > positionMs) return i;
+        }
+        return 0;
+    }
+
+    static List<Integer> groupBoundaries(List<String> sources, int maxCues, int maxChars) {
         List<Integer> boundaries = new ArrayList<>();
         boundaries.add(0);
         int size = 0;
         for (int i = 0; i < sources.size(); i++) {
             int length = sources.get(i).length();
             int start = boundaries.get(boundaries.size() - 1);
-            if (i - start >= MAX_CUES || size + length > MAX_CHUNK_CHARS) {
+            if (i - start >= maxCues || size + length > maxChars) {
                 boundaries.add(i);
                 size = 0;
             }
             size += length;
         }
-        boundaries.add(sources.size());
+        if (!sources.isEmpty()) boundaries.add(sources.size());
+        return boundaries;
+    }
 
-        AtomicFile guideCheckpoint = checkpoint(sources, new JSONArray());
-        resultCheckpoint = checkpoint(sources, new JSONArray(targets));
-        JSONObject saved = readCheckpoint(guideCheckpoint);
-        JSONObject savedResults = readCheckpoint(resultCheckpoint);
-        String guide = saved.optString("guide", "");
-        int analyzed = saved.optInt("analyzed", 0);
-        List<String> results = new ArrayList<>(targets.size());
-        JSONArray completed = savedResults.optJSONArray("completed");
-        if (completed == null) completed = new JSONArray();
-        for (int i = 0; i < completed.length(); i++) results.add(completed.getString(i));
-        int groupCount = boundaries.size() - 1;
-        if (analyzed < groupCount || results.size() < targets.size()) {
-            modelLoading.run();
-            loadModel();
-        }
-        for (int chunk = analyzed; chunk < groupCount; chunk++) {
-            analysisProgress.accept(chunk, groupCount);
-            guide = analyzeGroup(sources, boundaries.get(chunk), boundaries.get(chunk + 1), guide);
-            saveCheckpoint(guideCheckpoint, saved.put("guide", guide).put("analyzed", chunk + 1));
-        }
-
-        progress.accept(java.util.Collections.emptyList());
-        if (!results.isEmpty()) progress.accept(new ArrayList<>(results));
-        for (int chunk = 0; chunk + 1 < boundaries.size() && results.size() < targets.size(); chunk++) {
-            int start = boundaries.get(chunk);
-            int end = boundaries.get(chunk + 1);
-            List<Integer> requested = new ArrayList<>();
-            for (int i = results.size(); i < targets.size() && targets.get(i) < end; i++) {
-                requested.add(targets.get(i));
-            }
-            if (requested.isEmpty()) continue;
-            translateGroup(sources, requested, guide, Math.max(0, start - NEIGHBORS),
-                    Math.min(sources.size(), end + NEIGHBORS), batch -> {
-                        results.addAll(batch);
-                        saveCheckpoint(resultCheckpoint, savedResults.put("completed", new JSONArray(results)));
-                        progress.accept(new ArrayList<>(results));
-                    });
-        }
-        return results;
+    private static void logDuration(String stage, long started) {
+        Log.i(TAG, stage + " elapsed_ms=" + (SystemClock.elapsedRealtime() - started));
     }
 
     private String analyzeGroup(List<String> sources, int start, int end, String guide) throws Exception {
@@ -176,8 +281,8 @@ final class ContextTranslationClient implements AutoCloseable {
             Object updatedGuide = request("Build a cumulative translation guide for the entire video in Vietnamese. "
                     + "Integrate this dialogue with the previous guide. Keep established names, terms, character "
                     + "relationships and address pairs, and note changes with cue IDs. Infer speakers only from evidence. "
-                    + "Record ambiguities and idiomatic meanings. Keep the guide under 450 words. "
-                    + "Return JSON {\"guide\": string}.", input, GUIDE_GRAMMAR).get("guide");
+                    + "Keep recurring names, terms, address pairs and essential idioms. Use a compact list under 65 Vietnamese words. "
+                    + "Return JSON {\"guide\": string}.", input, GUIDE_GRAMMAR, GUIDE_TOKENS).get("guide");
             if (!(updatedGuide instanceof String) || ((String) updatedGuide).trim().isEmpty()
                     || ((String) updatedGuide).length() > MAX_GUIDE_CHARS) {
                 throw new JSONException("Hướng dẫn dịch trả về không hợp lệ.");
@@ -223,15 +328,17 @@ final class ContextTranslationClient implements AutoCloseable {
                 .put("dialogue", dialogue(sources, start, end)).put("requested_ids", new JSONArray(requested));
         String format = " Return JSON {\"translations\": [{\"id\": integer, \"text\": string}]}. "
                 + "Return exactly one nonempty Vietnamese subtitle per requested ID, in the given order. ";
-        JSONObject draft = request("Translate the dialogue together as a conversation, then align the "
-                + "translation to the original cues. Honor preferred names and terms. Use natural Vietnamese "
-                + "address pairs based on relationships, neutral forms when uncertain, and convey slang and "
-                + "idioms by intent. Preserve meaning, tone, and timing." + format, input, grammar);
-        readTranslations(draft, requested);
-        JSONObject reviewed = request("Review the draft against the dialogue and the full-video guide. "
-                + "Correct inconsistent names, terminology, address pairs, mistranslated idioms, and missing meaning. "
-                + "Keep the ordering and cue alignment." + format, input.put("draft", draft), grammar);
-        return readTranslations(reviewed, requested);
+        long started = SystemClock.elapsedRealtime();
+        try {
+            JSONObject response = request("Translate the dialogue together as a conversation, then align the "
+                    + "translation to the original cues. Honor preferred names and terms. Use natural Vietnamese "
+                    + "address pairs based on relationships, neutral forms when uncertain, and convey slang and "
+                    + "idioms by intent. Preserve meaning, tone, and timing. Check consistency before returning."
+                    + format, input, grammar, TRANSLATION_TOKENS);
+            return readTranslations(response, requested);
+        } finally {
+            logDuration("translation cues=" + requested.size(), started);
+        }
     }
 
     private static String translationGrammar(List<Integer> ids) {
@@ -282,7 +389,7 @@ final class ContextTranslationClient implements AutoCloseable {
         }
     }
 
-    private JSONObject request(String instructions, JSONObject input, String grammar) throws Exception {
+    private JSONObject request(String instructions, JSONObject input, String grammar, int maxTokens) throws Exception {
         long engine;
         synchronized (this) {
             if (closed) throw new IOException("Đã hủy dịch theo ngữ cảnh.");
@@ -293,8 +400,8 @@ final class ContextTranslationClient implements AutoCloseable {
                 + "<|im_end|>\n<|im_start|>user\n"
                 + input.toString().replace("<", "\\u003c")
                 + "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n";
-        byte[] result = generate(engine, prompt.getBytes(StandardCharsets.UTF_8), grammar,
-                Math.max(1, Math.min(4, Runtime.getRuntime().availableProcessors())));
+        byte[] result = generateBounded(engine, prompt.getBytes(StandardCharsets.UTF_8), grammar,
+                Math.max(1, Math.min(4, Runtime.getRuntime().availableProcessors())), maxTokens);
         if (result == null) throw new ModelWindowException();
         return new JSONObject(new String(result, StandardCharsets.UTF_8));
     }
@@ -307,7 +414,7 @@ final class ContextTranslationClient implements AutoCloseable {
 
     private AtomicFile checkpoint(List<String> sources, JSONArray targets) throws Exception {
         MessageDigest digest = MessageDigest.getInstance("SHA-256");
-        String identity = new JSONArray().put("qwen-context-v2").put(glossary)
+        String identity = new JSONArray().put("qwen-context-v5").put(glossary)
                 .put(new JSONArray(sources)).put(targets).toString();
         String name = ContextModelStore.hex(digest.digest(identity.getBytes(StandardCharsets.UTF_8)));
         return new AtomicFile(new File(store.checkpoints, name + ".json"));
@@ -351,7 +458,7 @@ final class ContextTranslationClient implements AutoCloseable {
     }
 
     private static native long openModel(String path);
-    private static native byte[] generate(long handle, byte[] prompt, String grammar, int threads) throws IOException;
+    private static native byte[] generateBounded(long handle, byte[] prompt, String grammar, int threads, int maxTokens) throws IOException;
     private static native void cancelModel(long handle);
     private static native void freeModel(long handle);
 }

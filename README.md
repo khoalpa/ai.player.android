@@ -62,9 +62,9 @@ Nếu gặp `INSTALL_FAILED_UPDATE_INCOMPATIBLE`, APK đang cài và APK mới c
 ## Transcript, bản dịch và phụ đề
 
 1. Trong **Cài đặt → Ngôn ngữ và phụ đề**, chọn ngôn ngữ nguồn và đích. Mặc định là tiếng Nhật sang tiếng Việt. Vosk hỗ trợ nhận dạng tiếng Nhật, Anh, Việt, Hàn và Trung.
-2. Chọn **Tạo transcript** và chọn track âm thanh nếu video có nhiều track. Nếu đã có phụ đề theo thời gian, dùng **Nhập phụ đề (SRT/VTT)** trong menu **⋯**.
+2. Chọn **Tạo transcript** và chọn track âm thanh nếu video có nhiều track. Vosk dùng mốc thời gian của từng từ để ghép lời thoại thành câu theo dấu câu và khoảng ngắt. Với lời thoại dài, ứng dụng ưu tiên tách ở chỗ ngắt tự nhiên để phụ đề dễ đọc. Nếu đã có phụ đề theo thời gian, dùng **Nhập phụ đề (SRT/VTT)** trong menu **⋯**.
 3. Danh sách transcript trong trình phát hiển thị lời gốc theo câu. Khi có bản dịch, mỗi câu đã dịch hiển thị cả lời gốc và bản dịch. Chạm vào câu để tua đến mốc thời gian tương ứng.
-4. Dùng **Phụ đề** và **Phát âm** để chọn lời gốc hoặc bản dịch cho từng chức năng. Cả hai bám theo mốc thời gian của câu. Vào **Cài đặt → Âm thanh → Chọn giọng đọc** để chọn và nghe thử giọng TextToSpeech trên thiết bị.
+4. Cả nút **Phụ đề** và **Phát âm** đều hiển thị trạng thái **Tắt**, **Gốc** hoặc **Dịch**. Chạm vào từng nút để đổi chế độ. Cả hai bám theo mốc thời gian của câu. Vào **Cài đặt → Âm thanh → Chọn giọng đọc** để chọn và nghe thử giọng TextToSpeech trên thiết bị.
 
 ### Hai chế độ dịch ngoại tuyến
 
@@ -73,9 +73,11 @@ Nếu gặp `INSTALL_FAILED_UPDATE_INCOMPATIBLE`, APK đang cài và APK mới c
 | **Dịch → Theo câu** | ML Kit dịch từng câu theo cặp ngôn ngữ đã chọn. | Tải các gói ngôn ngữ cần thiết trong **Cài đặt → Quản lý model → Dịch**. Tiếng Anh là ngôn ngữ trung gian và không cần gói riêng. |
 | **Dịch → Ngữ cảnh** | Qwen phân tích transcript của cả video để xây dựng hướng dẫn chung, rồi dùng hướng dẫn đó cùng các câu lân cận khi dịch sang tiếng Việt. Kết quả vẫn gắn với từng câu và mốc thời gian gốc. | Tải **Qwen3-4B Q4_K_M** (khoảng 2,5 GB) trong **Cài đặt → Quản lý model → Dịch**. |
 
-**Ngữ cảnh** giúp chọn cách xưng hô phù hợp với quan hệ nhân vật, giữ tên riêng và thuật ngữ nhất quán, đồng thời dịch tiếng lóng và thành ngữ theo ý người nói. Xem trước kết quả rồi bấm **Áp dụng** để lưu. Cả hai chế độ chạy trên thiết bị sau khi tải đủ model.
+**Ngữ cảnh** giúp chọn cách xưng hô phù hợp với quan hệ nhân vật, giữ tên riêng và thuật ngữ nhất quán, đồng thời dịch tiếng lóng và thành ngữ theo ý người nói. Có thể nhập tên riêng, thuật ngữ và cách xưng hô ưu tiên trước khi dịch. Cả hai chế độ chạy trên thiết bị sau khi tải đủ model.
 
-Nếu còn câu chưa dịch, dùng **Dịch lại N câu thiếu** để thử lại hoặc **Xử lý N câu thiếu** để mở từng câu, nghe lại, sửa lời gốc và dịch lại.
+Khi dịch theo **Ngữ cảnh**, ML Kit có thể hiển thị sớm bản nháp cho các câu còn thiếu trong lúc Qwen xử lý. Qwen ưu tiên các câu gần vị trí đang phát, phân tích transcript theo nhóm để xây dựng ngữ cảnh chung, rồi hiệu đính những câu cần xem lại. Khi chạy lại cùng tác vụ, ứng dụng có thể dùng lại phần phân tích và bản dịch đã lưu tạm. Khi dịch riêng một câu theo ngữ cảnh, xem trước kết quả rồi bấm **Áp dụng**.
+
+Nếu còn câu chưa dịch, dùng **Dịch lại N câu thiếu** để thử lại hoặc **Xử lý N câu thiếu** để mở từng câu, nghe lại, sửa lời gốc và dịch lại. Với bản dịch tiếng Việt đã có, tùy chọn **Dịch lại các câu tự động và giữ câu đã sửa tay** trong **Ngữ cảnh** cho phép hiệu đính lại các câu do ứng dụng dịch và giữ những câu đã chỉnh sửa.
 
 Trong menu **⋯** của trình phát, dùng **Xuất tệp** hoặc **Chia sẻ** để lưu hay gửi transcript gốc, bản dịch hoặc nội dung song ngữ dưới dạng TXT hoặc SRT.
 
@@ -137,7 +139,7 @@ Dùng **Build → Generate Signed Bundle / APK** trong Android Studio để tạ
 |---|---|
 | `MainActivity`, Media3 | Giao diện, điều khiển video và cung cấp vị trí phát |
 | `VideoSession` | Track âm thanh, transcript, tác vụ dịch và hủy kết quả cũ |
-| `OriginalAudioCaptionGenerator`, `VoskModelStore` | Giải mã track và nhận dạng lời nói |
+| `OriginalAudioCaptionGenerator`, `VoskModelStore`, `SpokenSentences` | Giải mã âm thanh, nhận dạng lời nói và ghép từ thành câu có mốc thời gian |
 | `TranscriptParser`, `TranslationClient` | Nhập phụ đề và dịch từng câu |
 | `CueTimeline`, `CueSpeech` | Chọn đoạn theo vị trí phát và điều khiển giọng đọc |
 | `VideoWork`, `VideoWorkService` | Giữ tác vụ ngoài Activity, thông báo nền, hủy và checkpoint bản dịch |

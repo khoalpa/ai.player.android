@@ -21,11 +21,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 final class OriginalAudioCaptionGenerator {
-    private static final long CUE_LEAD_IN_MS = 120L;
-    private static final long CUE_TAIL_MS = 320L;
-    private static final long MAX_CUE_DURATION_MS = 2_800L;
-    private static final long MAX_WORD_GAP_MS = 650L;
-    private static final int MAX_CUE_CHARS = 34;
 
     interface Callback {
         boolean isCancelled();
@@ -140,6 +135,7 @@ final class OriginalAudioCaptionGenerator {
         long modelTime = started - timing.start;
         String outcome = "error";
         List<TranscriptCue> cues = new ArrayList<>();
+        SpokenSentences sentences = new SpokenSentences(cues);
         MediaExtractor extractor = new MediaExtractor();
         MediaCodec decoder = null;
         PcmRecognition recognition = new PcmRecognition(model);
@@ -160,7 +156,7 @@ final class OriginalAudioCaptionGenerator {
             decoder.start();
 
             timing.codec += SystemClock.elapsedRealtimeNanos() - started;
-            long endMs = decodeAndRecognize(extractor, decoder, recognition, cues, callback,
+            long endMs = decodeAndRecognize(extractor, decoder, recognition, sentences, cues, callback,
                     channelCount, timing);
             if (callback.isCancelled() || Thread.currentThread().isInterrupted()) {
                 outcome = "cancelled";
@@ -168,9 +164,10 @@ final class OriginalAudioCaptionGenerator {
             }
             started = SystemClock.elapsedRealtimeNanos();
             if (recognition.recognizer != null) {
-                addResultCue(cues, recognition.recognizer.getFinalResult(), Math.max(endMs, lastCueEnd(cues)), recognition.timestamps);
+                addResult(sentences, recognition.recognizer.getFinalResult(), endMs, recognition.timestamps);
             }
             timing.vosk += SystemClock.elapsedRealtimeNanos() - started;
+            sentences.finish();
             recordFirstCue(cues, timing);
             outcome = cues.isEmpty() ? "empty" : "complete";
             callback.onFinished(cues, cues.isEmpty()
@@ -203,6 +200,7 @@ final class OriginalAudioCaptionGenerator {
             MediaExtractor extractor,
             MediaCodec decoder,
             PcmRecognition recognition,
+            SpokenSentences sentences,
             List<TranscriptCue> cues,
             Callback callback,
             int channelCount, Timing timing
@@ -273,12 +271,12 @@ final class OriginalAudioCaptionGenerator {
                     timing.audioMs = lastTimeMs;
                     started = SystemClock.elapsedRealtimeNanos();
                     if (recognition.recognizer.acceptWaveForm(pcm, pcmSize)) {
-                        addResultCue(cues, recognition.recognizer.getResult(), lastTimeMs, recognition.timestamps);
+                        addResult(sentences, recognition.recognizer.getResult(), lastTimeMs, recognition.timestamps);
                         recordFirstCue(cues, timing);
                     }
                     timing.vosk += SystemClock.elapsedRealtimeNanos() - started;
-                    // The next recognition result can still shorten the last cue.
-                    int stable = cues.size() - 1;
+                    // Only emit sentences whose boundaries have been finalized.
+                    int stable = cues.size();
                     long now = SystemClock.elapsedRealtime();
                     if (stable > published && (published == 0 || now - lastPublishMs >= 750)) {
                         List<TranscriptCue> batch = new ArrayList<>(stable - published);
@@ -334,108 +332,34 @@ final class OriginalAudioCaptionGenerator {
         }
     }
 
-    private void addResultCue(List<TranscriptCue> cues, String resultJson, long endMs, AudioTimestampMap timestamps) {
+    private void addResult(SpokenSentences sentences, String resultJson, long endMs,
+                           AudioTimestampMap timestamps) throws java.io.IOException {
         try {
             JSONObject result = new JSONObject(resultJson);
-            String text = result.optString("text", "").trim();
-            if (text.isEmpty()) {
-                return;
-            }
             JSONArray words = result.optJSONArray("result");
             if (words != null && words.length() > 0) {
-                int before = cues.size();
-                addWordTimedCues(cues, words, timestamps);
-                if (cues.size() > before) {
-                    trimOverlaps(cues, before);
-                    return;
+                for (int i = 0; i < words.length(); i++) {
+                    JSONObject word = words.optJSONObject(i);
+                    if (word == null || word.optString("word").trim().isEmpty()
+                            || !Double.isFinite(word.optDouble("start"))
+                            || !Double.isFinite(word.optDouble("end"))) {
+                        sentences.addUntimed(result.optString("text").trim(), endMs);
+                        return;
+                    }
                 }
+                for (int i = 0; i < words.length(); i++) {
+                    JSONObject word = words.getJSONObject(i);
+                    long start = Math.max(0, Math.round(word.getDouble("start") * 1000));
+                    long end = Math.max(start + 1, Math.round(word.getDouble("end") * 1000));
+                    sentences.add(word.getString("word").trim(),
+                            timestamps.mediaMs(start), timestamps.mediaEndMs(end));
+                }
+            } else {
+                sentences.addUntimed(result.optString("text").trim(), endMs);
             }
-            long startMs = cues.isEmpty() ? Math.max(0, endMs - 4000) : Math.max(cues.get(cues.size() - 1).endMs, endMs - 5000);
-            long fixedEndMs = Math.max(startMs + 1000, endMs);
-            cues.add(new TranscriptCue(startMs, fixedEndMs, text));
-        } catch (Exception ignored) {
+        } catch (org.json.JSONException ex) {
+            throw new java.io.IOException("Invalid recognition result", ex);
         }
-    }
-
-    private void addWordTimedCues(List<TranscriptCue> cues, JSONArray words, AudioTimestampMap timestamps) {
-        long groupStartMs = -1;
-        long groupEndMs = -1;
-        StringBuilder groupText = new StringBuilder();
-        JSONArray wordStarts = new JSONArray();
-        for (int i = 0; i < words.length(); i++) {
-            JSONObject word = words.optJSONObject(i);
-            if (word == null) {
-                continue;
-            }
-            String token = word.optString("word", "").trim();
-            if (token.isEmpty()) {
-                continue;
-            }
-            long startMs = Math.max(0, Math.round(word.optDouble("start", 0) * 1000.0));
-            long endMs = Math.max(startMs + 80, Math.round(word.optDouble("end", startMs / 1000.0) * 1000.0));
-            startMs = timestamps.mediaMs(startMs);
-            endMs = Math.max(startMs + 80, timestamps.mediaEndMs(endMs));
-            boolean shouldSplit = groupText.length() > 0
-                    && (startMs - groupEndMs > MAX_WORD_GAP_MS
-                    || endMs - groupStartMs > MAX_CUE_DURATION_MS
-                    || groupText.length() + token.length() + 1 > MAX_CUE_CHARS);
-            if (shouldSplit) {
-                addWordGroupCue(cues, groupStartMs, groupEndMs, groupText.toString(), wordStarts);
-                wordStarts = new JSONArray();
-                groupStartMs = -1;
-                groupEndMs = -1;
-                groupText.setLength(0);
-            }
-            if (groupStartMs < 0) {
-                groupStartMs = startMs;
-            }
-            if (groupText.length() > 0) {
-                groupText.append(' ');
-            }
-            wordStarts.put(new JSONArray().put(groupText.length()).put(startMs));
-            groupText.append(token);
-            groupEndMs = Math.max(groupEndMs, endMs);
-        }
-        if (groupText.length() > 0) {
-            addWordGroupCue(cues, groupStartMs, groupEndMs, groupText.toString(), wordStarts);
-        }
-    }
-
-    private void addWordGroupCue(List<TranscriptCue> cues, long startMs, long endMs, String text,
-                                 JSONArray wordStarts) {
-        String cleanText = text == null ? "" : text.trim();
-        if (cleanText.isEmpty() || startMs < 0 || endMs <= startMs) {
-            return;
-        }
-        long cueStartMs = Math.max(0, startMs - CUE_LEAD_IN_MS);
-        long cueEndMs = Math.max(cueStartMs + 250, endMs + CUE_TAIL_MS);
-        TranscriptCue cue = new TranscriptCue(cueStartMs, cueEndMs, cleanText);
-        cue.wordStarts = wordStarts;
-        cues.add(cue);
-    }
-
-    private void trimOverlaps(List<TranscriptCue> cues, int startIndex) {
-        int first = Math.max(1, startIndex);
-        for (int i = first; i < cues.size(); i++) {
-            TranscriptCue previous = cues.get(i - 1);
-            TranscriptCue current = cues.get(i);
-            if (previous.endMs <= current.startMs) {
-                continue;
-            }
-            long adjustedEndMs = Math.max(previous.startMs + 250, current.startMs - 40);
-            cues.set(i - 1, copyCue(previous, previous.startMs, adjustedEndMs));
-        }
-    }
-
-    private TranscriptCue copyCue(TranscriptCue cue, long startMs, long endMs) {
-        TranscriptCue copy = new TranscriptCue(startMs, endMs, cue.sourceText);
-        copy.setTranslation(cue.targetText, cue.translationOrigin);
-        copy.wordStarts = cue.wordStarts;
-        return copy;
-    }
-
-    private long lastCueEnd(List<TranscriptCue> cues) {
-        return cues.isEmpty() ? 0 : cues.get(cues.size() - 1).endMs;
     }
 
     private void downmixToMono16Bit(ByteBuffer input, byte[] mono, int size, int channelCount) {

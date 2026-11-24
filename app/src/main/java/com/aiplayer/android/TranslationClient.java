@@ -61,6 +61,10 @@ final class TranslationClient {
         languageIdentifier = contextual == null ? LanguageIdentification.getClient() : null;
     }
 
+    void prioritizeContext(long positionMs) {
+        if (contextual != null) contextual.prioritize(positionMs);
+    }
+
     boolean usesContext() {
         return contextual != null;
     }

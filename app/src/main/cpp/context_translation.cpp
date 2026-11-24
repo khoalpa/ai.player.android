@@ -1,6 +1,7 @@
 #include <jni.h>
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <memory>
 #include <string>
 #include <vector>
@@ -19,6 +20,21 @@ jbyteArray failure(JNIEnv *env, const char *message) {
 
 bool aborted(void *engine) {
     return static_cast<Engine *>(engine)->cancelled.load();
+}
+
+llama_token sampleConstrainedGreedy(llama_context *context, llama_sampler *sampler,
+                                    llama_sampler *grammar, int vocab_size) {
+    const auto *logits = llama_get_logits_ith(context, -1);
+    if (!logits) return LLAMA_TOKEN_NULL;
+    const auto *best = std::max_element(logits, logits + vocab_size);
+    llama_token_data candidate{static_cast<llama_token>(best - logits), *best, 0.0f};
+    llama_token_data_array candidates{&candidate, 1, -1, false};
+
+    // Only scan the whole vocabulary when the highest-scoring token is invalid.
+    llama_sampler_apply(grammar, &candidates);
+    if (!std::isfinite(candidate.logit)) return llama_sampler_sample(sampler, context, -1);
+    llama_sampler_accept(sampler, candidate.id);
+    return candidate.id;
 }
 }
 
@@ -48,8 +64,8 @@ Java_com_aiplayer_android_ContextTranslationClient_freeModel(JNIEnv *, jclass, j
 }
 
 extern "C" JNIEXPORT jbyteArray JNICALL
-Java_com_aiplayer_android_ContextTranslationClient_generate(JNIEnv *env, jclass, jlong handle,
-                                                            jbyteArray prompt, jstring grammar, jint threads) {
+Java_com_aiplayer_android_ContextTranslationClient_generateBounded(JNIEnv *env, jclass, jlong handle,
+                                                            jbyteArray prompt, jstring grammar, jint threads, jint output_tokens) {
     auto *engine = reinterpret_cast<Engine *>(handle);
     const auto *vocab = llama_model_get_vocab(engine->model.get());
     std::string input(env->GetArrayLength(prompt), '\0');
@@ -57,8 +73,7 @@ Java_com_aiplayer_android_ContextTranslationClient_generate(JNIEnv *env, jclass,
                             reinterpret_cast<jbyte *>(input.data()));
     if (env->ExceptionCheck()) return nullptr;
     constexpr int context_tokens = 8192;
-    constexpr int output_tokens = 1600;
-    constexpr int prompt_limit = context_tokens - output_tokens;
+    const int prompt_limit = context_tokens - output_tokens;
     std::vector<llama_token> tokens(prompt_limit);
     const int count = llama_tokenize(vocab, input.data(), static_cast<int>(input.size()),
                                     tokens.data(), prompt_limit, false, true);
@@ -89,9 +104,11 @@ Java_com_aiplayer_android_ContextTranslationClient_generate(JNIEnv *env, jclass,
     if (!constraint) return failure(env, "Could not initialize subtitle output constraints.");
     llama_sampler_chain_add(sampler.get(), constraint);
     llama_sampler_chain_add(sampler.get(), llama_sampler_init_greedy());
+    const int vocab_size = llama_vocab_n_tokens(vocab);
     std::string result;
     for (int i = 0; i < output_tokens && !engine->cancelled.load(); ++i) {
-        auto token = llama_sampler_sample(sampler.get(), context.get(), -1);
+        auto token = sampleConstrainedGreedy(context.get(), sampler.get(), constraint, vocab_size);
+        if (token == LLAMA_TOKEN_NULL) return failure(env, "Missing offline subtitle token.");
         if (llama_vocab_is_eog(vocab, token)) break;
         char piece[256];
         int length = llama_token_to_piece(vocab, token, piece, sizeof(piece), 0, false);

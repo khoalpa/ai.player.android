@@ -6,6 +6,21 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class TranslationBatchTest {
+    @Test public void draftRemainsPendingAndCannotOverwriteRefinement() {
+        List<TranscriptCue> cues = cues();
+        TranslationBatch batch = new TranslationBatch(cues, "vi", "vi");
+        TranscriptCue cue = batch.input.get(0);
+        cue.translationPending = true;
+
+        assertTrue(batch.acceptDraft(0, "draft", true));
+        assertTrue(cue.translationPending);
+        assertTrue(new TranslationBatch(cues, "vi", "vi").input.contains(cue));
+        batch.accept(0, "refined");
+        assertFalse(batch.acceptDraft(0, "late draft", true));
+        assertFalse(cue.translationPending);
+        assertEquals("refined", cue.targetText);
+    }
+
     private List<TranscriptCue> cues() {
         TranscriptCue first = new TranscriptCue(0, 1000, "one");
         first.targetText = "một";
@@ -35,6 +50,25 @@ public class TranslationBatchTest {
         assertEquals("một mới", cues.get(0).targetText);
         assertEquals("hai", cues.get(1).targetText);
         assertEquals(TranscriptCue.TranslationOrigin.MANUAL, cues.get(1).translationOrigin);
+    }
+
+    @Test public void resumeOnlyReplacesUnfinishedCuesEvenWithOldTranslations() {
+        List<TranscriptCue> cues = cues();
+        for (TranscriptCue cue : cues) {
+            cue.setTranslation("old", TranscriptCue.TranslationOrigin.AUTOMATIC);
+            cue.translationPending = true;
+        }
+        TranslationBatch batch = new TranslationBatch(cues, "vi", "vi", null, true);
+        batch.accept(0, "new");
+
+        List<TranscriptCue> snapshot = Arrays.asList(cues.get(0).copy(), cues.get(1).copy(), cues.get(2).copy());
+        TranslationBatch resumed = new TranslationBatch(snapshot, "vi", "vi");
+        assertEquals(Arrays.asList(snapshot.get(1), snapshot.get(2)), resumed.input);
+        assertEquals("new", snapshot.get(0).targetText);
+        assertEquals("old", snapshot.get(1).targetText);
+        resumed.accept(0, "new two");
+        assertFalse(snapshot.get(1).translationPending);
+        assertTrue(snapshot.get(2).translationPending);
     }
 
     @Test public void failedLanguageChangeLeavesExistingTranslationIntact() {

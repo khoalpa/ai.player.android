@@ -109,6 +109,7 @@ final class TranscriptCache {
                         TranscriptCue restored = new TranscriptCue(cue.getLong("start"), cue.getLong("end"),
                                 cue.getString("text"));
                         restored.wordStarts = cue.optJSONArray("word_starts");
+                        restored.sentence = cue.optBoolean("sentence");
                         result.add(restored);
                     }
                     if (!result.isEmpty()) {
@@ -131,7 +132,8 @@ final class TranscriptCache {
             JSONArray array = new JSONArray();
             for (TranscriptCue cue : cues) {
                 array.put(new JSONObject().put("start", cue.startMs).put("end", cue.endMs)
-                        .put("text", cue.sourceText).put("word_starts", cue.wordStarts));
+                        .put("text", cue.sourceText).put("word_starts", cue.wordStarts)
+                        .put("sentence", cue.sentence));
             }
             output = file.startWrite();
             JSONObject saved = new JSONObject().put("cues", array).put("origin", origin);
