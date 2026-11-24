@@ -17,6 +17,7 @@ import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.PopupMenu;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -41,6 +42,7 @@ final class PlayerHomeView extends ScrollView {
     private final TextView taskTitle, taskDetail;
     private final Button taskAction;
     private final Consumer<Uri> playRecent;
+    private final Consumer<Uri> removeRecent;
     private final ExecutorService previews = Executors.newSingleThreadExecutor();
     private final ExecutorService durations = Executors.newFixedThreadPool(3);
     private final List<Future<?>> previewRequests = new ArrayList<>();
@@ -49,10 +51,11 @@ final class PlayerHomeView extends ScrollView {
     private boolean closed;
 
     PlayerHomeView(Context context, AppSettings settings, Runnable open,
-                   Runnable telegram, Consumer<Uri> playRecent) {
+                   Runnable telegram, Consumer<Uri> playRecent, Consumer<Uri> removeRecent) {
         super(context);
         this.settings = settings;
         this.playRecent = playRecent;
+        this.removeRecent = removeRecent;
         setVerticalScrollBarEnabled(false);
         LinearLayout content = column();
         content.setPadding(dp(PlayerAppearance.HORIZONTAL_INSET_DP), dp(PlayerAppearance.GROUP_GAP_DP), dp(PlayerAppearance.HORIZONTAL_INSET_DP), dp(PlayerAppearance.HORIZONTAL_INSET_DP));
@@ -183,11 +186,20 @@ final class PlayerHomeView extends ScrollView {
         processing.setCompoundDrawablePadding(dp(4));
         details.addView(processing, new LinearLayout.LayoutParams(-1, -2));
 
-        ImageView play = new ImageView(context);
-        play.setImageResource(R.drawable.ic_home_play);
-        play.setImageTintList(PlayerAppearance.controlIconTint(context));
-        play.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-        card.addView(play, new LinearLayout.LayoutParams(dp(24), dp(24)));
+        TextView actions = label(20, false);
+        actions.setText("⋯");
+        actions.setGravity(Gravity.CENTER);
+        actions.setContentDescription("Tùy chọn video gần đây");
+        actions.setFocusable(true);
+        actions.setOnClickListener(anchor -> {
+            PopupMenu menu = new PopupMenu(context, anchor);
+            menu.getMenu().add("Xóa khỏi lịch sử").setOnMenuItemClickListener(item -> {
+                removeRecent.accept(video.uri);
+                return true;
+            });
+            menu.show();
+        });
+        card.addView(actions, new LinearLayout.LayoutParams(dp(48), dp(48)));
         details.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
 
         boolean canResume = position >= RESUME_LABEL_MIN_MS;

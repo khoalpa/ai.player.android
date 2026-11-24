@@ -278,7 +278,9 @@ public final class MainActivity extends ComponentActivity {
                 if (work.pendingRecentGrantFlags >= 0 && currentVideo != null) {
                     persistReadPermission(currentVideo, work.pendingRecentGrantFlags);
                     work.pendingRecentGrantFlags = -1;
-                    sessionStore.recordOpened(currentVideo, session.videoName);
+                    if (!work.playbackHistoryCleared) {
+                        sessionStore.recordOpened(currentVideo, session.videoName);
+                    }
                     if (!hasVideo) updateResumeVideo();
                 }
                 if (DECODER_RECLAIMED_MESSAGE.contentEquals(status.getText())) showStatus("");
@@ -288,7 +290,9 @@ public final class MainActivity extends ComponentActivity {
         if (session.videoUri() != null && (!"file".equals(session.videoUri().getScheme())
                 || isSavedFileAvailable(session.videoUri()))) {
             PlaybackSessionStore.Snapshot retained = new PlaybackSessionStore.Snapshot(session.videoUri(),
-                    session.identity(), work.position, session.sourceLanguage, session.targetLanguage, session.cues);
+                    session.identity(), work.position, session.completedSource(), session.completedTarget(),
+                    new ArrayList<>(session.completedCues()));
+            retained.transcriptOrigin = session.transcriptOrigin();
             retained.name = session.videoName;
             openVideo(retained.uri, retained, false, 0);
             updateControls(work.status());
@@ -402,6 +406,10 @@ public final class MainActivity extends ComponentActivity {
                     return true;
                 });
             } else {
+                popup.getMenu().add("Tùy chọn xử lý").setOnMenuItemClickListener(item -> {
+                    showVideoProcessing();
+                    return true;
+                });
                 popup.getMenu().add("Hướng màn hình").setOnMenuItemClickListener(item -> {
                     showPlaybackOrientation();
                     return true;
@@ -444,7 +452,7 @@ public final class MainActivity extends ComponentActivity {
 
         if (home != null) home.close();
         home = new PlayerHomeView(this, settings, this::showVideoSources,
-                () -> telegramContent().input(), this::resumeRecentVideo);
+                () -> telegramContent().input(), this::resumeRecentVideo, this::removeRecentHistory);
         empty = home;
         surface.addView(empty, new FrameLayout.LayoutParams(-1, -1));
 
@@ -1044,7 +1052,8 @@ public final class MainActivity extends ComponentActivity {
             work.discardResults(uri, false);
             updateResumeVideo();
             return true;
-        }, currentVideo, player.getCurrentPosition(), hasVideo || session.busy, bySize,
+        }, currentVideo, work.playbackHistoryCleared ? 0 : player.getCurrentPosition(),
+                hasVideo || session.busy, bySize,
                 () -> { if (bySize) refreshVisibleStorage(); });
     }
 
@@ -1171,6 +1180,7 @@ public final class MainActivity extends ComponentActivity {
             return;
         }
         if (uri.equals(currentVideo)) {
+            work.playbackHistoryCleared = false;
             if (work.pendingRecentGrantFlags < 0 && player.getPlayerError() == null) {
                 sessionStore.recordOpened(uri, session.videoName);
             }
@@ -1475,6 +1485,7 @@ public final class MainActivity extends ComponentActivity {
         player.setPlayWhenReady(false);
         player.setMediaItem(MediaItem.fromUri(uri), restored == null ? 0L : restored.position);
         if (resetSession) {
+            work.playbackHistoryCleared = false;
             skippedTranslationVersion = -1;
             session.open(uri, settings.sourceLanguage, restored);
             work.pendingRecentGrantFlags = grantFlags & Intent.FLAG_GRANT_READ_URI_PERMISSION;
@@ -1514,9 +1525,12 @@ public final class MainActivity extends ComponentActivity {
         long position = player.getCurrentPosition();
         work.position = position;
         if (savedTranscriptVersion == version) {
-            sessionStore.savePosition(currentVideo, currentVideoIdentity, position);
+            if (!work.playbackHistoryCleared) {
+                sessionStore.savePosition(currentVideo, currentVideoIdentity, position);
+            }
         } else {
-            sessionStore.save(currentVideo, currentVideoIdentity, position, session);
+            sessionStore.save(currentVideo, currentVideoIdentity, position, session,
+                    !work.playbackHistoryCleared);
             savedTranscriptVersion = version;
         }
     }
@@ -1524,6 +1538,9 @@ public final class MainActivity extends ComponentActivity {
     private static final List<String> SOURCE_LANGUAGES = Arrays.asList("ja", "en", "vi", "ko", "zh");
 
     private static String languageName(String code) {
+        if (VoskModelStore.largeModelKeys().contains(code)) {
+            return languageName(code.substring(0, code.indexOf('-'))) + " · Vosk Large";
+        }
         return Locale.forLanguageTag(code).getDisplayLanguage(Locale.forLanguageTag("vi"));
     }
 
@@ -1634,22 +1651,27 @@ public final class MainActivity extends ComponentActivity {
             labels.add(TranscriptParser.formatTime(cue.startMs) + " · Chưa dịch\n" + cue.sourceText);
         }
         if (missing.isEmpty()) return;
-        if (openSingle && missing.size() == 1) {
+        boolean canUseDeepL = "vi".equals(session.targetLanguage);
+        if (openSingle && missing.size() == 1 && !canUseDeepL) {
             editCueTranslation(missing.get(0));
             return;
         }
         Uri video = currentVideo;
-        showSheet(new AlertDialog.Builder(this)
+        AlertDialog.Builder dialog = new AlertDialog.Builder(this)
                 .setTitle("Còn " + missing.size() + " đoạn chưa được dịch")
-                .setItems(labels.toArray(new String[0]), (dialog, index) -> editCueTranslation(missing.get(index)))
+                .setItems(labels.toArray(new String[0]), (window, index) -> editCueTranslation(missing.get(index)))
                 .setNegativeButton("Để sau", null)
-                .setPositiveButton("Dịch lại", (dialog, which) ->
+                .setPositiveButton("Dịch lại", (window, which) ->
                         session.retryMissingTranslations(settings.sourceLanguage, () -> {
                             if (started && !destroyed && hasVideo && settingsScreen == null
                                     && java.util.Objects.equals(video, currentVideo)) {
                                 showMissingTranslations(false);
                             }
-                        })));
+                        }));
+        if (canUseDeepL) {
+            dialog.setNeutralButton("DeepL", (window, which) -> chooseTranslationLanguage(true, true));
+        }
+        showSheet(dialog);
     }
 
     private void editCueTranslation(TranscriptCue cue) {
@@ -1720,19 +1742,102 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private void chooseTranslationLanguage() {
+        chooseTranslationLanguage(false);
+    }
+
+    private String deepLKey;
+
+    private void chooseTranslationLanguage(boolean videoOnly) {
+        chooseTranslationLanguage(videoOnly, false);
+    }
+
+    private void chooseTranslationLanguage(boolean videoOnly, boolean preferDeepL) {
         List<String> codes = targetLanguages();
         LinearLayout form = form();
-        Spinner target = languages(form, "Ngôn ngữ đích", codes, settings.targetLanguage);
-        showSheet(sheet("Dịch transcript", form).setNegativeButton("Hủy", null)
-                .setPositiveButton("Dịch", (dialog, which) -> {
-                    settings.targetLanguage = codes.get(target.getSelectedItemPosition());
-                    settings.save(this);
-                    offerTranslation = true;
-                    session.translate(settings.targetLanguage, session.sourceLanguage);
-                }));
+        processingLabel(form, "Ngôn ngữ đích");
+        Spinner target = languages(form, "Ngôn ngữ đích", codes,
+                videoOnly && session.targetLanguage != null ? session.targetLanguage : settings.targetLanguage);
+        processingLabel(form, "Bộ dịch");
+        Spinner provider = selection(form, "Bộ dịch",
+                java.util.Arrays.asList("ML Kit Offline", "DeepL · Cần mạng"), 0);
+        LinearLayout deepLOptions = column();
+        form.addView(deepLOptions);
+        processingLabel(deepLOptions, "DeepL gửi văn bản cần dịch đến máy chủ DeepL để dịch sang tiếng Việt.");
+        EditText key = new EditText(this);
+        key.setSingleLine(true);
+        key.setSaveEnabled(false);
+        key.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
+        key.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        key.setHint("Khóa DeepL API Free hoặc Pro");
+        key.setText(deepLKey);
+        deepLOptions.addView(key);
+        boolean changesTarget = session.targetLanguage != null && !"vi".equals(session.targetLanguage);
+        android.widget.CheckBox replaceTarget = new android.widget.CheckBox(this);
+        if (changesTarget) {
+            replaceTarget.setText("Thay bản dịch hiện có bằng tiếng Việt, kể cả đoạn đã sửa tay.");
+            deepLOptions.addView(replaceTarget);
+        }
+        deepLOptions.setVisibility(View.GONE);
+        int[] offlineTarget = {target.getSelectedItemPosition()};
+        provider.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                boolean online = position == 1;
+                deepLOptions.setVisibility(online ? View.VISIBLE : View.GONE);
+                if (online && target.isEnabled()) {
+                    offlineTarget[0] = target.getSelectedItemPosition();
+                    target.setSelection(codes.indexOf("vi"));
+                } else if (!online && !target.isEnabled()) {
+                    target.setSelection(offlineTarget[0]);
+                }
+                target.setEnabled(!online && !preferDeepL);
+            }
+
+            @Override public void onNothingSelected(AdapterView<?> parent) {
+                deepLOptions.setVisibility(View.GONE);
+            }
+        });
+        if (preferDeepL) provider.setSelection(1);
+        if (session.targetLanguage != null) {
+            processingLabel(form, "Dịch lại bằng ML Kit có thể thay thế bản dịch đã chỉnh sửa.");
+        }
+        AlertDialog dialog = sheet("Dịch transcript", form).setNegativeButton("Hủy", null)
+                .setPositiveButton("Dịch", null).create();
+        showSheet(dialog);
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+            if (session.busy || session.cues.isEmpty()) return;
+            boolean useDeepL = provider.getSelectedItemPosition() == 1;
+            String selected = codes.get(target.getSelectedItemPosition());
+            if (useDeepL && !"vi".equals(selected)) {
+                android.widget.Toast.makeText(this, "DeepL hiện hỗ trợ đích Tiếng Việt trong AI Player.",
+                        android.widget.Toast.LENGTH_SHORT).show();
+                return;
+            }
+            String keyValue = useDeepL ? key.getText().toString().trim() : null;
+            if (useDeepL && (keyValue.isEmpty() || keyValue.matches(".*\\s+.*"))) {
+                key.setError("Nhập khóa DeepL API hợp lệ.");
+                return;
+            }
+            if (useDeepL && changesTarget && !replaceTarget.isChecked()) {
+                replaceTarget.setError("Xác nhận đổi ngôn ngữ bản dịch.");
+                return;
+            }
+            if (useDeepL) deepLKey = keyValue;
+            if (!videoOnly) {
+                settings.targetLanguage = selected;
+                settings.save(this);
+            }
+            offerTranslation = true;
+            dialog.dismiss();
+            session.retranslate(selected, session.sourceLanguage, videoOnly && !preferDeepL && !useDeepL, keyValue);
+        });
     }
 
     private void chooseTrack() {
+        chooseTrack(false);
+    }
+
+    private void chooseTrack(boolean videoOnly) {
         List<VideoSession.AudioTrack> tracks = new ArrayList<>(session.tracks);
         if (tracks.isEmpty()) return;
         List<String> labels = new ArrayList<>();
@@ -1742,12 +1847,41 @@ public final class MainActivity extends ComponentActivity {
         }
         LinearLayout form = form();
         Spinner track = selection(form, "Track âm thanh", labels, Math.max(0, playing));
-        Spinner language = languages(form, "Ngôn ngữ lời thoại", SOURCE_LANGUAGES, settings.sourceLanguage);
-        showSheet(sheet("Tạo transcript", form).setNegativeButton("Hủy", null)
-                .setPositiveButton("Tạo transcript", (dialog, which) -> {
-                    settings.sourceLanguage = SOURCE_LANGUAGES.get(language.getSelectedItemPosition());
-                    settings.save(this);
-                    session.generate(tracks.get(track.getSelectedItemPosition()), settings.sourceLanguage);
+        Spinner language = languages(form, "Ngôn ngữ lời thoại", SOURCE_LANGUAGES,
+                videoOnly && SOURCE_LANGUAGES.contains(session.sourceLanguage)
+                        ? session.sourceLanguage : settings.sourceLanguage);
+        LinearLayout modelOptions = column();
+        form.addView(modelOptions);
+        processingLabel(modelOptions, "Model cho lượt mới");
+        Spinner model = selection(modelOptions, "Model cho lượt mới",
+                java.util.Arrays.asList("Vosk Small (mặc định)", "Vosk Large"), 0);
+        Runnable updateModels = () -> modelOptions.setVisibility(
+                VoskModelStore.largeModelKey(SOURCE_LANGUAGES.get(language.getSelectedItemPosition())) != null
+                        ? View.VISIBLE : View.GONE);
+        language.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                updateModels.run();
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent) {
+                modelOptions.setVisibility(View.GONE);
+            }
+        });
+        updateModels.run();
+        if (!session.cues.isEmpty()) {
+            processingLabel(form, transcriptOriginLabel());
+            processingLabel(form, "Nhận dạng lại sẽ thay thế transcript và bản dịch hiện tại.");
+        }
+        String action = session.cues.isEmpty() ? "Tạo transcript" : "Nhận dạng lại";
+        showSheet(sheet(action, form).setNegativeButton("Hủy", null)
+                .setPositiveButton(action, (dialog, which) -> {
+                    String selected = SOURCE_LANGUAGES.get(language.getSelectedItemPosition());
+                    if (!videoOnly) {
+                        settings.sourceLanguage = selected;
+                        settings.save(this);
+                    }
+                    String large = VoskModelStore.largeModelKey(selected);
+                    String recognitionModel = large != null && model.getSelectedItemPosition() == 1 ? large : selected;
+                    session.generate(tracks.get(track.getSelectedItemPosition()), selected, recognitionModel);
                 }));
     }
 
@@ -2129,10 +2263,10 @@ public final class MainActivity extends ComponentActivity {
                         + "Trên màn hình phát, mở Phụ đề để chọn văn bản hiển thị. "
                         + "Mở Phát âm, chọn nội dung và bấm Áp dụng để nghe giọng đọc.", false);
         LinearLayout models = guideSection(form, "Dịch ngoại tuyến",
-                "Mở Quản lý model → Dịch offline (ML Kit). Tải model cho ngôn ngữ nguồn và đích theo "
+                "Mở Model và giọng đọc → Dịch offline (ML Kit). Tải model cho ngôn ngữ nguồn và đích theo "
                         + "trạng thái hiển thị. Dùng Wi-Fi hoặc dữ liệu di động khi tải lần đầu. "
                         + "Sau khi tải đủ model, bạn có thể dịch ngoại tuyến.", modelsExpanded);
-        compactButton(models, "Mở Quản lý model", () -> {
+        compactButton(models, "Mở Model và giọng đọc", () -> {
             showModels(ModelTab.TRANSLATION, () -> showGuide(true));
         });
         guideSection(form, "Xử lý sự cố",
@@ -2177,8 +2311,8 @@ public final class MainActivity extends ComponentActivity {
         settingsEntry(form, R.drawable.ic_control_captions, "Ngôn ngữ và phụ đề",
                 languageName(settings.sourceLanguage) + " → " + languageName(settings.targetLanguage)
                         + " · Phụ đề " + settings.subtitleSize + " sp", this::showLanguageSettings);
-        settingsEntry(form, R.drawable.ic_control_download, "Quản lý model",
-                "Nhận dạng giọng nói · Dịch offline", this::showModels);
+        settingsEntry(form, R.drawable.ic_control_download, "Model và giọng đọc",
+                "Nhận dạng · Dịch offline · Phát âm", this::showModels);
         Button storage = settingsEntry(form, R.drawable.ic_control_library, "Dữ liệu và bộ nhớ",
                 "Đang tính dung lượng…", this::showStorage);
         loadStorage((usage, entries) -> {
@@ -2255,6 +2389,8 @@ public final class MainActivity extends ComponentActivity {
         LinearLayout form = form();
         View page = settingsPage("Dữ liệu và bộ nhớ", form, true);
         storagePage = page;
+        settingsEntry(form, R.drawable.ic_control_library, "Xóa lịch sử hoạt động",
+                "Video gần đây · Liên kết Telegram đã mở", this::showClearActivityHistory);
         LinearLayout content = column();
         form.addView(content, new LinearLayout.LayoutParams(-1, -2));
         TextView measurement = new TextView(this);
@@ -2279,6 +2415,55 @@ public final class MainActivity extends ComponentActivity {
         };
         refreshVisibleStorage();
         work.models.refreshTranslations();
+    }
+
+    private void showClearActivityHistory() {
+        String[] categories = {"Video gần đây và vị trí phát đã lưu", "Liên kết Telegram đã mở"};
+        boolean[] selected = new boolean[categories.length];
+        AlertDialog dialog = new PlayerAppearance.DialogBuilder(this, settings)
+                .setTitle("Xóa lịch sử hoạt động")
+                .setMultiChoiceItems(categories, selected, (ignored, which, checked) -> {
+                    selected[which] = checked;
+                    AlertDialog choices = (AlertDialog) ignored;
+                    choices.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(selected[0] || selected[1]);
+                })
+                .setNegativeButton("Hủy", null)
+                .setPositiveButton("Tiếp tục", (ignored, which) -> {
+                    String scope = selected[0] && selected[1]
+                            ? categories[0] + "\n" + categories[1]
+                            : categories[selected[0] ? 0 : 1];
+                    new PlayerAppearance.DialogBuilder(this, settings)
+                            .setTitle("Xóa lịch sử đã chọn?")
+                            .setMessage(scope + "\n\nVideo đã lưu, transcript, bản dịch và phiên Telegram vẫn được giữ.")
+                            .setNegativeButton("Hủy", null)
+                            .setPositiveButton("Xóa lịch sử", (confirm, action) -> clearActivityHistory(selected))
+                            .show();
+                })
+                .create();
+        dialog.show();
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+    }
+
+    private void clearActivityHistory(boolean[] selected) {
+        if (selected[1]) telegramContent().clearHistory();
+        if (selected[0]) {
+            removeRecentHistory(null);
+        } else {
+            storageMessage("Đã xóa lịch sử đã chọn.");
+        }
+    }
+
+    private void removeRecentHistory(Uri uri) {
+        if (currentVideo != null && (uri == null || uri.equals(currentVideo))) {
+            work.playbackHistoryCleared = true;
+        }
+        sessionStore.clearHistory(uri, success -> {
+            if (destroyed) return;
+            storageMessage(success
+                    ? (uri == null ? "Đã xóa lịch sử đã chọn." : "Đã xóa video khỏi lịch sử.")
+                    : "Chưa xóa được một số vị trí phát đã lưu. Hãy thử lại.");
+        });
+        updateResumeVideo();
     }
 
     private void renderStorage(LinearLayout form, StorageUsage usage, int transcriptCount, View page) {
@@ -2816,13 +3001,191 @@ public final class MainActivity extends ComponentActivity {
         android.widget.Toast.makeText(this, message, android.widget.Toast.LENGTH_SHORT).show();
     }
 
+    private String effectiveVoice(String language, boolean translated) {
+        if (language == null || "auto".equals(language)) return "";
+        String code = Locale.forLanguageTag(language).getLanguage();
+        String override = session.voices.get(voiceOverrideKey(code, translated));
+        return override == null ? AppSettings.voice(this, code) : override;
+    }
+
+    private static String voiceOverrideKey(String code, boolean translated) {
+        return (translated ? "translation." : "original.") + code;
+    }
+
+    private void showDefaultVoices() {
+        chooseVoice(settings.targetLanguage, false, false);
+    }
+
+    private String voiceDescription(String language, boolean translated) {
+        return describeVoice(language, effectiveVoice(language, translated));
+    }
+
+    private String describeVoice(String language, String selected) {
+        for (android.speech.tts.Voice voice : speech.voices(language)) {
+            if (voice.getName().equals(selected)) return voiceLabel(voice);
+        }
+        return "Tự động";
+    }
+
+    private static String voiceLabel(android.speech.tts.Voice voice) {
+        return voice.getLocale().getDisplayName() + " · " + voice.getName()
+                + (voice.isNetworkConnectionRequired() ? " · Cần mạng" : " · Offline");
+    }
+
+    private String transcriptOriginLabel() {
+        String origin = session.transcriptOrigin();
+        if (origin == null) return "Transcript hiện tại · Chưa ghi nhận model";
+        if (VideoSession.IMPORTED_SUBTITLES.equals(origin)) return "Transcript hiện tại · Phụ đề đã nhập";
+        String model = origin.startsWith("vosk-model-small-") ? "Vosk Small" : "Vosk Large";
+        return "Transcript hiện tại · " + model + " (" + origin + ")";
+    }
+
+    private void showVideoProcessing() {
+        LinearLayout controls = form();
+        String source = session.sourceLanguage;
+        String target = session.targetLanguage == null ? settings.targetLanguage : session.targetLanguage;
+        AlertDialog dialog = sheet("Tùy chọn xử lý", controls).setNegativeButton("Đóng", null).create();
+        processingLabel(controls, "Nhận dạng · Vosk offline");
+        if (!session.completedCues().isEmpty()) processingLabel(controls, transcriptOriginLabel());
+        if (!session.tracks.isEmpty()) {
+            compactButton(controls, session.cues.isEmpty() ? "Tạo transcript" : "Nhận dạng lại", () -> {
+                dialog.dismiss();
+                chooseTrack(true);
+            }).setEnabled(!session.busy);
+        }
+        processingLabel(controls, "Dịch · ML Kit Offline hoặc DeepL");
+        if (!session.cues.isEmpty()) {
+            compactButton(controls, session.targetLanguage == null ? "Dịch" : "Dịch lại", () -> {
+                dialog.dismiss();
+                chooseTranslationLanguage(true);
+            }).setEnabled(!session.busy);
+        }
+        if (source != null && !"auto".equals(source)) {
+            processingLabel(controls, voiceDescription(source, false));
+            compactButton(controls, "Giọng gốc · " + languageName(source), () -> {
+                dialog.dismiss();
+                chooseVoice(source, true, false);
+            });
+        }
+        processingLabel(controls, voiceDescription(target, true));
+        compactButton(controls, "Giọng dịch · " + languageName(target), () -> {
+            dialog.dismiss();
+            chooseVoice(target, true, true);
+        });
+        showSheet(dialog);
+    }
+
+    private TextView processingLabel(LinearLayout form, String label) {
+        TextView view = new TextView(this);
+        view.setTextSize(settings.textSize(14));
+        view.setText(label);
+        form.addView(view);
+        return view;
+    }
+
+    private void chooseVoice(String language, boolean videoOnly, boolean translated) {
+        LinearLayout controls = form();
+        List<String> codes = videoOnly ? java.util.Collections.singletonList(language) : targetLanguages();
+        Spinner languagePicker = null;
+        if (!videoOnly) {
+            processingLabel(controls, "Ngôn ngữ");
+            languagePicker = languages(controls, "Ngôn ngữ giọng đọc", codes, language);
+        }
+        Spinner languages = languagePicker;
+        java.util.function.Supplier<String> selectedCode = () -> Locale.forLanguageTag(
+                codes.get(languages == null ? 0 : Math.max(0, languages.getSelectedItemPosition()))).getLanguage();
+        processingLabel(controls, "Giọng đọc");
+        LinearLayout voiceOptions = column();
+        controls.addView(voiceOptions);
+        TextView availability = processingLabel(controls, "");
+        TextView status = processingLabel(controls, "");
+        CueSpeech preview = new CueSpeech(this, status::setText);
+        Button systemSettings = compactButton(controls, "Mở cài đặt giọng đọc", () -> {
+            preview.stop();
+            try {
+                startActivity(new Intent("com.android.settings.TTS_SETTINGS"));
+            } catch (android.content.ActivityNotFoundException | SecurityException unavailable) {
+                startActivity(new Intent(android.provider.Settings.ACTION_SETTINGS));
+            }
+        });
+        List<String> names = new ArrayList<>();
+        java.util.function.Supplier<String> selectedVoice = () -> {
+            Spinner picker = (Spinner) voiceOptions.getChildAt(0);
+            return names.get(Math.max(0, picker.getSelectedItemPosition()));
+        };
+        Runnable refreshVoices = () -> {
+            String code = selectedCode.get();
+            List<android.speech.tts.Voice> voices = speech.voices(code);
+            preview.stop();
+            status.setText("");
+            names.clear();
+            List<String> labels = new ArrayList<>();
+            if (videoOnly) {
+                names.add(null);
+                labels.add("Dùng mặc định · " + describeVoice(code, AppSettings.voice(this, code)));
+            }
+            names.add("");
+            labels.add("Tự động");
+            for (android.speech.tts.Voice voice : voices) {
+                names.add(voice.getName());
+                labels.add(voiceLabel(voice));
+            }
+            String saved = videoOnly ? session.voices.get(voiceOverrideKey(code, translated))
+                    : AppSettings.voice(this, code);
+            int selected = names.indexOf(saved);
+            voiceOptions.removeAllViews();
+            selection(voiceOptions, "Giọng đọc", labels, selected >= 0 ? selected : names.indexOf(""));
+            availability.setText(voices.isEmpty() ? "Android chưa cung cấp giọng cho ngôn ngữ này." : "");
+            availability.setVisibility(voices.isEmpty() ? View.VISIBLE : View.GONE);
+            systemSettings.setVisibility(availability.getVisibility());
+        };
+        refreshVoices.run();
+        if (languages != null) languages.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                refreshVoices.run();
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent) {}
+        });
+        compactButton(controls, "Nghe thử", () -> {
+            String code = selectedCode.get();
+            String selected = selectedVoice.get();
+            status.setText("");
+            preview.preview(voiceSample(code), code, settings.dubbingVolume / 100f,
+                    selected == null ? AppSettings.voice(this, code) : selected);
+        });
+        AlertDialog dialog = sheet(videoOnly ? "Giọng đọc · " + languageName(language) : "Chọn giọng đọc", controls)
+                .setNegativeButton("Hủy", null)
+                .setPositiveButton("Lưu", (ignored, which) -> {
+                    String code = selectedCode.get();
+                    String selected = selectedVoice.get();
+                    String key = voiceOverrideKey(code, translated);
+                    if (!videoOnly) AppSettings.saveVoice(this, code, selected);
+                    else if (selected == null) session.voices.remove(key);
+                    else session.voices.put(key, selected);
+                }).create();
+        dialog.setOnDismissListener(ignored -> preview.close());
+        showSheet(dialog);
+    }
+
+    private static String voiceSample(String language) {
+        switch (language) {
+            case "vi": return "Đây là giọng đọc mẫu của AI Player.";
+            case "ja": return "これは音声のサンプルです。";
+            case "ko": return "이것은 음성 샘플입니다.";
+            case "zh": return "这是语音示例。";
+            case "en": return "This is a sample of the selected voice.";
+            default: return Locale.forLanguageTag(language).getDisplayLanguage(Locale.forLanguageTag(language));
+        }
+    }
+
     private void showModels() {
         showModels(ModelTab.RECOGNITION, null);
     }
 
     private void showModels(ModelTab initialTab, Runnable parent) {
         LinearLayout controls = form();
-        LinearLayout page = settingsPage("Quản lý model", controls, true, false);
+        LinearLayout page = settingsPage("Model và giọng đọc", controls, true, false);
+        compactButton(controls, "Chọn giọng đọc", this::showDefaultVoices);
         settingsParent = parent;
 
         RadioGroup tabs = new RadioGroup(this);
@@ -2877,6 +3240,9 @@ public final class MainActivity extends ComponentActivity {
             storageIo.execute(() -> {
                 java.util.Map<String, Long> sizes = new java.util.HashMap<>();
                 for (String language : SOURCE_LANGUAGES) sizes.put(language, models.vosk.installedBytes(language));
+                for (String model : VoskModelStore.largeModelKeys()) {
+                    sizes.put(model, models.vosk.installedBytes(model));
+                }
                 runOnUiThread(() -> {
                     if (!destroyed && modelForm == targetForm && version == modelRenderVersion) {
                         resetModelRows();
@@ -2899,6 +3265,7 @@ public final class MainActivity extends ComponentActivity {
         Set<String> recognition = new LinkedHashSet<>();
         recognition.add(SOURCE_LANGUAGES.contains(source) ? source : "en");
         recognition.addAll(SOURCE_LANGUAGES);
+        recognition.addAll(VoskModelStore.largeModelKeys());
         modelText("Tạo transcript (Vosk) · Lớn nhất trước", true);
         boolean recognitionAvailable = !session.busy && !OfflineModels.pending(models.recognition);
         List<String> ordered = new ArrayList<>(recognition);
@@ -2908,7 +3275,8 @@ public final class MainActivity extends ComponentActivity {
             boolean downloaded = models.vosk.isDownloaded(language);
             OfflineModels.Operation operation = models.recognition.get(language);
             if (downloaded && operation == OfflineModels.Operation.DOWNLOAD_FAILED) operation = null;
-            modelRow(language, language.equals(source) ? "Ngôn ngữ nguồn đang chọn" : "", downloaded,
+            String model = VoskModelStore.modelName(language);
+            modelRow(language, model + (language.equals(source) ? " · Nguồn đang chọn" : ""), downloaded,
                     models.vosk.isBundled(language), operation, models.recognitionPercent, recognitionAvailable,
                     sizes.getOrDefault(language, -1L),
                     () -> models.downloadRecognition(language), () -> models.deleteRecognition(language));
@@ -3418,7 +3786,8 @@ public final class MainActivity extends ComponentActivity {
         previewStatus.setVisibility(View.GONE);
         Button preview = audioTextButton(voiceGroup, "Nghe thử", () -> {
             previewStatus.setVisibility(View.GONE);
-            audioPreview.preview("Đây là giọng đọc mẫu của AI Player.", "vi", voice.getProgress() / 100f);
+            audioPreview.preview("Đây là giọng đọc mẫu của AI Player.", "vi",
+                    voice.getProgress() / 100f, AppSettings.voice(this, "vi"));
         });
         voiceGroup.addView(previewStatus);
         Button reset = audioTextButton(form, "Khôi phục mặc định", () -> {
@@ -3839,7 +4208,8 @@ public final class MainActivity extends ComponentActivity {
         }
         if (message != null) {
             showStatus(message);
-            if (!busy) savePlaybackSession();
+            if (!busy || (session.isDeepLTranslationRunning()
+                    && savedTranscriptVersion != session.transcriptVersion())) savePlaybackSession();
         }
         updateChromeVisibility();
         transcript.setEnabled(hasCues);
@@ -3937,7 +4307,7 @@ public final class MainActivity extends ComponentActivity {
             speech.stop();
         } else {
             String language = read.speechLanguage(cue, session.sourceLanguage, session.targetLanguage);
-            speech.update(cue, read.text(cue), language, settings.dubbingVolume / 100f);
+            speech.update(cue, read.text(cue), language, settings.dubbingVolume / 100f, effectiveVoice(language, translatedSpeech));
         }
     }
 

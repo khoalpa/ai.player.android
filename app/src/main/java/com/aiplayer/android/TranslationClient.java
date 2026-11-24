@@ -9,6 +9,12 @@ import com.google.mlkit.nl.translate.Translation;
 import com.google.mlkit.nl.translate.Translator;
 import com.google.mlkit.nl.translate.TranslatorOptions;
 
+import org.json.JSONArray;
+import org.json.JSONException;
+
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -31,7 +37,7 @@ final class TranslationClient {
         void onFinished(int translatedCount, String status);
     }
 
-    private final LanguageIdentifier languageIdentifier = LanguageIdentification.getClient();
+    private final LanguageIdentifier languageIdentifier;
     private final Map<String, Translator> translators = new LinkedHashMap<String, Translator>(4, 0.75f, true) {
         @Override
         protected boolean removeEldestEntry(Map.Entry<String, Translator> eldest) {
@@ -49,11 +55,31 @@ final class TranslationClient {
         }
     };
     private boolean closed;
+    private final DeepLClient deepL;
+
+    TranslationClient() {
+        this(null);
+    }
+
+    TranslationClient(String deepLKey) {
+        deepL = deepLKey == null ? null : new DeepLClient(deepLKey);
+        languageIdentifier = deepL == null ? LanguageIdentification.getClient() : null;
+    }
 
     void translateCues(AppSettings settings, List<TranscriptCue> cues,
             List<TranscriptCue> languageSample, Callback callback) {
         if (cues.isEmpty()) {
             callback.onFinished(0, "Chưa có transcript để dịch.");
+            return;
+        }
+
+        if (deepL != null) {
+            if (!"vi".equals(settings.targetLanguage)) {
+                callback.onFinished(0, "DeepL trong AI Player hiện hỗ trợ dịch sang tiếng Việt.");
+                return;
+            }
+            String source = LanguageUtils.normalizeLanguage(settings.sourceLanguage, "auto");
+            translateDeepLBatch(source, cues, callback, new TranslationState(cues.size()));
             return;
         }
 
@@ -80,11 +106,11 @@ final class TranslationClient {
                         callback.onFinished(accepted, "Nguồn và đích cùng ngôn ngữ, đã giữ nguyên transcript.");
                         return;
                     }
-                    Translator translator = translatorFor(sourceLanguage, targetLanguage);
                     String languagePair = sourceLanguage + ">" + targetLanguage;
+                    Translator translator = translatorFor(sourceLanguage, targetLanguage);
                     DownloadConditions conditions = new DownloadConditions.Builder().build();
                     translator.downloadModelIfNeeded(conditions)
-                            .addOnSuccessListener(v -> translateNext(translator, languagePair, cues, callback, new TranslationState(cues.size())))
+                            .addOnSuccessListener(v -> translateNext(translator::translate, languagePair, cues, callback, new TranslationState(cues.size())))
                             .addOnFailureListener(ex -> {
                                 if (closed) return;
                                 callback.onModelUnavailable();
@@ -96,9 +122,14 @@ final class TranslationClient {
                 .addOnFailureListener(ex -> callback.onFinished(0, "Không nhận diện được ngôn ngữ nguồn: " + ex.getMessage()));
     }
 
+    boolean usesDeepL() {
+        return deepL != null;
+    }
+
     void close() {
         closed = true;
-        languageIdentifier.close();
+        if (deepL != null) deepL.close();
+        if (languageIdentifier != null) languageIdentifier.close();
         for (Translator translator : translators.values()) {
             translator.close();
         }
@@ -136,8 +167,87 @@ final class TranslationClient {
         return translator;
     }
 
+    private void translateDeepLBatch(String source, List<TranscriptCue> cues,
+                                    Callback callback, TranslationState state) {
+        if (closed) return;
+        Map<String, List<Integer>> batch = new LinkedHashMap<>();
+        Map<Integer, String> localResults = new LinkedHashMap<>();
+        try {
+            int bytes = DeepLClient.requestBody(source, Collections.emptyList()).length;
+            while (state.index < cues.size()) {
+                int index = state.index;
+                String original = cues.get(index).sourceText;
+                String text = normalizeCueText(original);
+                if (text.isEmpty()) {
+                    state.failed++;
+                } else if ("vi".equals(source) || !shouldTranslateText(text)) {
+                    localResults.put(index, original);
+                } else if (translationCache.containsKey(text)) {
+                    localResults.put(index, translationCache.get(text));
+                } else {
+                    List<Integer> indices = batch.get(text);
+                    if (indices == null) {
+                        int additionalBytes = new JSONArray().put(text).toString()
+                                .getBytes(StandardCharsets.UTF_8).length - 1;
+                        if (batch.size() == DeepLClient.MAX_TEXTS || bytes + additionalBytes > DeepLClient.MAX_REQUEST_BYTES) {
+                            if (batch.isEmpty()) {
+                                finishDeepL(callback, state, "Một đoạn văn vượt giới hạn gửi DeepL.");
+                                return;
+                            }
+                            break;
+                        }
+                        bytes += additionalBytes;
+                        indices = new ArrayList<>();
+                        batch.put(text, indices);
+                    }
+                    indices.add(index);
+                }
+                state.index++;
+            }
+        } catch (JSONException error) {
+            finishDeepL(callback, state, "Không thể tạo yêu cầu DeepL.");
+            return;
+        }
+
+        if (batch.isEmpty()) {
+            publishLocalResults(localResults, callback, state);
+            finishDeepL(callback, state, null);
+            return;
+        }
+        deepL.translate(source, new ArrayList<>(batch.keySet()))
+                .addOnSuccessListener(results -> {
+                    if (closed) return;
+                    publishLocalResults(localResults, callback, state);
+                    int resultIndex = 0;
+                    for (Map.Entry<String, List<Integer>> entry : batch.entrySet()) {
+                        String translation = results.get(resultIndex++);
+                        translationCache.put(entry.getKey(), translation);
+                        for (int index : entry.getValue()) {
+                            callback.onTranslated(index, translation);
+                            state.translated++;
+                        }
+                    }
+                    callback.onProgress(state.completed(), state.total, state.cached, state.skipped);
+                    translateDeepLBatch(source, cues, callback, state);
+                })
+                .addOnFailureListener(error -> {
+                    if (!closed) finishDeepL(callback, state, error.getMessage());
+                });
+    }
+
+    private void publishLocalResults(Map<Integer, String> results, Callback callback, TranslationState state) {
+        results.forEach(callback::onTranslated);
+        state.cached += results.size();
+    }
+
+    private void finishDeepL(Callback callback, TranslationState state, String failure) {
+        int saved = state.completed() - state.failed;
+        String progress = "Đã hoàn tất " + saved + "/" + state.total + " đoạn bằng DeepL.";
+        callback.onFinished(saved, failure == null ? progress : failure + " " + progress);
+    }
+
     private void translateNext(
-            Translator translator,
+            java.util.function.Function<String, Task<String>> translator,
             String languagePair,
             List<TranscriptCue> cues,
             Callback callback,
@@ -173,7 +283,7 @@ final class TranslationClient {
                 continue;
             }
 
-            translator.translate(normalizedText)
+            translator.apply(normalizedText)
                     .addOnSuccessListener(text -> {
                         if (closed) return;
                         if (text == null || text.trim().isEmpty()) {

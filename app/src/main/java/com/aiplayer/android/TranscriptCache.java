@@ -77,33 +77,50 @@ final class TranscriptCache {
         }
     }
 
-    synchronized List<TranscriptCue> readLatest(String key, List<VideoSession.AudioTrack> tracks) {
-        List<TranscriptCue> latest = new ArrayList<>();
+    static final class Entry {
+        final List<TranscriptCue> cues;
+        final String origin;
+
+        Entry(List<TranscriptCue> cues, String origin) {
+            this.cues = cues;
+            this.origin = origin;
+        }
+    }
+
+    synchronized Entry readLatest(String identity, String language, List<VideoSession.AudioTrack> tracks) {
+        Entry latest = null;
         long latestTime = Long.MIN_VALUE;
-        if (key == null) return latest;
-        for (VideoSession.AudioTrack track : tracks) {
-            File file = fileFor(key, track.index);
-            long updated = file.lastModified();
-            if (!file.isFile() || updated < latestTime) continue;
-            try {
-                JSONArray array = new JSONArray(new String(new AtomicFile(file).readFully(), StandardCharsets.UTF_8));
-                List<TranscriptCue> result = new ArrayList<>(array.length());
-                for (int i = 0; i < array.length(); i++) {
-                    JSONObject cue = array.getJSONObject(i);
-                    result.add(new TranscriptCue(cue.getLong("start"), cue.getLong("end"), cue.getString("text")));
+        String large = VoskModelStore.largeModelKey(language);
+        for (String model : java.util.Arrays.asList(language, large)) {
+            if (model == null) continue;
+            String key = keyForIdentity(identity, model);
+            if (key == null) continue;
+            for (VideoSession.AudioTrack track : tracks) {
+                File file = fileFor(key, track.index);
+                long updated = file.lastModified();
+                if (!file.isFile() || updated < latestTime) continue;
+                try {
+                    String json = new String(new AtomicFile(file).readFully(), StandardCharsets.UTF_8);
+                    JSONObject saved = json.trim().startsWith("{") ? new JSONObject(json) : null;
+                    JSONArray array = saved == null ? new JSONArray(json) : saved.getJSONArray("cues");
+                    List<TranscriptCue> result = new ArrayList<>(array.length());
+                    for (int i = 0; i < array.length(); i++) {
+                        JSONObject cue = array.getJSONObject(i);
+                        result.add(new TranscriptCue(cue.getLong("start"), cue.getLong("end"), cue.getString("text")));
+                    }
+                    if (!result.isEmpty()) {
+                        latest = new Entry(result, saved == null ? null : saved.optString("origin", null));
+                        latestTime = updated;
+                    }
+                } catch (Exception ex) {
+                    Log.w(TAG, "Could not read cached transcript");
                 }
-                if (!result.isEmpty()) {
-                    latest = result;
-                    latestTime = updated;
-                }
-            } catch (Exception ex) {
-                Log.w(TAG, "Could not read cached transcript");
             }
         }
         return latest;
     }
 
-    synchronized void write(String key, int track, List<TranscriptCue> cues) {
+    synchronized void write(String key, int track, List<TranscriptCue> cues, String origin) {
         if (key == null || cues.isEmpty()) return;
         AtomicFile file = new AtomicFile(fileFor(key, track));
         FileOutputStream output = null;
@@ -114,7 +131,8 @@ final class TranscriptCache {
                         .put("text", cue.sourceText));
             }
             output = file.startWrite();
-            output.write(array.toString().getBytes(StandardCharsets.UTF_8));
+            JSONObject saved = new JSONObject().put("cues", array).put("origin", origin);
+            output.write(saved.toString().getBytes(StandardCharsets.UTF_8));
             file.finishWrite(output);
         } catch (Exception ex) {
             if (output != null) file.failWrite(output);
@@ -126,6 +144,9 @@ final class TranscriptCache {
         java.util.Set<String> keys = new java.util.HashSet<>();
         for (String language : java.util.Arrays.asList("auto", "ja", "en", "vi", "ko", "zh", source)) {
             if (language != null) keys.add(keyForIdentity(identity, language));
+        }
+        for (String model : VoskModelStore.largeModelKeys()) {
+            keys.add(keyForIdentity(identity, model));
         }
         File[] files = cacheFiles();
         if (files != null) for (File file : files) {

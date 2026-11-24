@@ -15,10 +15,15 @@ final class TranslationBatch {
     }
 
     TranslationBatch(List<TranscriptCue> cues, String previousTarget, String target, TranscriptCue selected) {
+        this(cues, previousTarget, target, selected, false);
+    }
+
+    TranslationBatch(List<TranscriptCue> cues, String previousTarget, String target,
+                     TranscriptCue selected, boolean retranslate) {
         all = cues;
         replacingLanguage = !target.equals(previousTarget);
         for (TranscriptCue cue : cues) {
-            if (selected == null ? replacingLanguage || !cue.hasTranslation() : cue == selected) {
+            if (selected == null ? retranslate || replacingLanguage || !cue.hasTranslation() : cue == selected) {
                 input.add(cue);
             }
         }

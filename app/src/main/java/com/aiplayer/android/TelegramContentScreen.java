@@ -1797,6 +1797,10 @@ final class TelegramContentScreen {
         });
     }
 
+    void clearHistory() {
+        history.edit().clear().apply();
+    }
+
     private List<String> history() {
         List<String> items = new ArrayList<>();
         try {

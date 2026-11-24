@@ -75,6 +75,16 @@ final class AppSettings {
     boolean raisedControls = true;
     int fontSize = 1;
 
+    static String voice(Context context, String language) {
+        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getString("ttsVoice." + language, "");
+    }
+
+    static void saveVoice(Context context, String language, String voice) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .putString("ttsVoice." + language, voice).apply();
+    }
+
     int textSize(int base) {
         return base + (fontSize - 2) * 2;
     }

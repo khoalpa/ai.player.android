@@ -31,6 +31,7 @@ final class VideoWork {
     private boolean checkpointPending;
     private Uri transcriptMutation;
     long position;
+    boolean playbackHistoryCleared;
     // Retained with the current video across Activity recreation. -1 means no pending entry.
     int pendingRecentGrantFlags = -1;
     private final Runnable checkpoint = this::saveCheckpoint;

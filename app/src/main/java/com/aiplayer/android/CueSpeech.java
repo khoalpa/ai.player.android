@@ -6,8 +6,13 @@ import android.os.Handler;
 import android.os.Looper;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.UtteranceProgressListener;
+import android.speech.tts.Voice;
 
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.function.Consumer;
 
 final class CueSpeech {
@@ -89,7 +94,7 @@ final class CueSpeech {
                 && engine.isLanguageAvailable(Locale.forLanguageTag(language)) >= 0;
     }
 
-    void update(TranscriptCue cue, String text, String language, float volume) {
+    void update(TranscriptCue cue, String text, String language, float volume, String voiceName) {
         if (activeUtterance != null && (cue != lastCue || !lastText.equals(text)
                 || !lastLanguage.equals(language))) {
             stop();
@@ -102,19 +107,48 @@ final class CueSpeech {
         lastCue = cue;
         lastText = text;
         lastLanguage = language;
-        if (engine.setLanguage(Locale.forLanguageTag(language)) < 0) return;
+        if (!selectVoice(language, voiceName)) return;
         speak(text, volume);
     }
 
-    void preview(String text, String language, float volume) {
+    void preview(String text, String language, float volume, String voiceName) {
         stop();
         if (initializing) {
             status.accept("Đang khởi tạo giọng đọc. Hãy thử lại sau.");
-        } else if (!supports(language) || engine.setLanguage(Locale.forLanguageTag(language)) < 0) {
-            status.accept("Thiết bị chưa có giọng đọc tiếng Việt.");
+        } else if (!supports(language) || !selectVoice(language, voiceName)) {
+            status.accept("Thiết bị chưa có giọng đọc cho ngôn ngữ này.");
         } else {
             speak(text, volume);
         }
+    }
+
+    List<Voice> voices(String language) {
+        List<Voice> voices = new ArrayList<>();
+        if (!ready || language == null) return voices;
+        Set<Voice> available = engine.getVoices();
+        if (available == null) return voices;
+        String code = Locale.forLanguageTag(language).getLanguage();
+        for (Voice voice : available) {
+            if (code.equals(voice.getLocale().getLanguage())
+                    && (voice.getFeatures() == null
+                    || !voice.getFeatures().contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED))) {
+                voices.add(voice);
+            }
+        }
+        voices.sort(Comparator.comparing(Voice::isNetworkConnectionRequired).thenComparing(Voice::getName));
+        return voices;
+    }
+
+    private boolean selectVoice(String language, String voiceName) {
+        Locale locale = Locale.forLanguageTag(language);
+        if (!ready || engine.setLanguage(locale) < 0) return false;
+        if (voiceName == null || voiceName.isEmpty()) return true;
+        for (Voice voice : voices(language)) {
+            if (voiceName.equals(voice.getName())) {
+                return engine.setVoice(voice) == TextToSpeech.SUCCESS || engine.setLanguage(locale) >= 0;
+            }
+        }
+        return true;
     }
 
     private void speak(String text, float volume) {

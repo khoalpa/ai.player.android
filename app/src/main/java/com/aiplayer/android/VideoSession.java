@@ -75,9 +75,12 @@ final class VideoSession {
     private String previousSourceLanguage;
     private String previousTargetLanguage;
 
+    final java.util.Map<String, String> voices = new java.util.HashMap<>();
     final List<AudioTrack> tracks = new ArrayList<>();
     final List<TranscriptCue> cues = new ArrayList<>();
     final CueTimeline timeline = new CueTimeline(cues);
+    static final String IMPORTED_SUBTITLES = "imported";
+    private String transcriptOrigin;
     String sourceLanguage;
     String targetLanguage;
     boolean busy;
@@ -104,6 +107,7 @@ final class VideoSession {
     }
 
     void open(Uri uri, String language, PlaybackSessionStore.Snapshot restored) {
+        voices.clear();
         failedTarget = null;
         translationModelUnavailable = false;
         cancel();
@@ -115,12 +119,14 @@ final class VideoSession {
         transcriptVersion++;
         tracks.clear();
         cues.clear();
+        transcriptOrigin = null;
         sourceLanguage = null;
         targetLanguage = null;
         int request = revision;
         int opened = ++videoRevision;
         if (restored != null) {
             cues.addAll(restored.cues);
+            transcriptOrigin = restored.transcriptOrigin;
             sourceLanguage = restored.source;
             targetLanguage = restored.target;
             failedTask = restored.failedTask;
@@ -158,22 +164,21 @@ final class VideoSession {
             extractor.release();
         }
         if (Thread.currentThread().isInterrupted()) return;
-        List<TranscriptCue> saved = loadCache ? cache.readLatest(TranscriptCache.keyForIdentity(identity, language), result)
-                : new ArrayList<>();
+        TranscriptCache.Entry saved = loadCache ? cache.readLatest(identity, language, result) : null;
         String message = status;
         main.post(() -> {
             if (opened != videoRevision || video == null) return;
             tracks.clear();
             tracks.addAll(result);
-            if (request == revision && !saved.isEmpty()) {
-                finishTranscript(request, saved, language, "Đã mở transcript đã lưu.");
+            if (request == revision && saved != null) {
+                finishTranscript(request, saved.cues, language, "Đã mở transcript đã lưu.", saved.origin);
             } else {
                 changed.accept(request == revision ? message : null);
             }
         });
     }
 
-    void generate(AudioTrack track, String language) {
+    void generate(AudioTrack track, String language, String model) {
         if (OfflineModels.pending(models.recognition)) {
             changed.accept("Đang quản lý model Vosk. Hãy đợi thao tác hoàn tất.");
             return;
@@ -185,12 +190,12 @@ final class VideoSession {
         changed.accept("Đang chuẩn bị nhận dạng…");
         if (request != revision) return;
         Uri input = video;
-        String key = TranscriptCache.keyForIdentity(videoIdentity, language);
-        recognize(input, track, language, request, key);
+        String key = TranscriptCache.keyForIdentity(videoIdentity, model);
+        recognize(input, track, language, model, request, key);
     }
 
-    private void recognize(Uri input, AudioTrack track, String language, int request, String key) {
-        generator.generate(input, track.index, language, new OriginalAudioCaptionGenerator.Callback() {
+    private void recognize(Uri input, AudioTrack track, String language, String model, int request, String key) {
+        generator.generate(input, track.index, model, new OriginalAudioCaptionGenerator.Callback() {
             @Override
             public boolean isCancelled() {
                 return request != revision;
@@ -236,9 +241,10 @@ final class VideoSession {
                     if (result.isEmpty()) restorePreviousTranscript();
                     previousCues = null;
                     if (!result.isEmpty()) finishedTask = Task.TRANSCRIPT;
-                    finishTranscript(request, result, language, status);
+                    String origin = VoskModelStore.modelName(model);
+                    finishTranscript(request, result, language, status, origin);
                     if (key != null && !result.isEmpty()) {
-                        files.execute(() -> cache.write(key, track.index, result));
+                        files.execute(() -> cache.write(key, track.index, result, origin));
                     }
                 });
             }
@@ -266,7 +272,7 @@ final class VideoSession {
                     if (request != revision) return;
                     if (count > MAX_SUBTITLE_BYTES - content.size()) {
                         main.post(() -> finishTranscript(request, new ArrayList<>(), language,
-                                "Tệp phụ đề vượt giới hạn 4 MiB."));
+                                "Tệp phụ đề vượt giới hạn 4 MiB.", null));
                         return;
                     }
                     content.write(buffer, 0, count);
@@ -281,11 +287,11 @@ final class VideoSession {
             }
             List<TranscriptCue> parsed = result;
             String message = status;
-            main.post(() -> finishTranscript(request, parsed, language, message));
+            main.post(() -> finishTranscript(request, parsed, language, message, IMPORTED_SUBTITLES));
         });
     }
 
-    private void finishTranscript(int request, List<TranscriptCue> result, String language, String status) {
+    private void finishTranscript(int request, List<TranscriptCue> result, String language, String status, String origin) {
         if (request != revision) return;
         boolean attempted = runningTask == Task.TRANSCRIPT;
         busy = false;
@@ -296,6 +302,7 @@ final class VideoSession {
             transcriptVersion++;
         }
         if (!result.isEmpty()) {
+            transcriptOrigin = origin;
             transcriptVersion++;
             cues.clear();
             cues.addAll(result);
@@ -311,12 +318,20 @@ final class VideoSession {
         changed.accept(status);
     }
 
+    String transcriptOrigin() {
+        return transcriptOrigin;
+    }
+
     long transcriptVersion() {
         return transcriptVersion;
     }
 
     Uri videoUri() { return video; }
     String identity() { return videoIdentity; }
+    boolean isDeepLTranslationRunning() {
+        return translator != null && translator.usesDeepL();
+    }
+
     Task failedTask() { return failedTask; }
     String failedTarget() { return failedTarget; }
 
@@ -360,6 +375,10 @@ final class VideoSession {
         translate(target, configuredSource, null, null);
     }
 
+    void retranslate(String target, String configuredSource, boolean replace, String deepLKey) {
+        translate(target, configuredSource, null, null, replace, deepLKey);
+    }
+
     void retryMissingTranslations(String configuredSource, Runnable onFinished) {
         if (!busy && missingTranslations() > 0) {
             translate(targetLanguage, configuredSource, null, onFinished);
@@ -373,6 +392,7 @@ final class VideoSession {
     void applyEditedTranscript(PlaybackSessionStore.Snapshot updated) {
         cues.clear();
         for (TranscriptCue cue : updated.cues) cues.add(cue.copy());
+        transcriptOrigin = updated.transcriptOrigin;
         sourceLanguage = updated.source;
         targetLanguage = updated.target;
         failedTask = updated.failedTask;
@@ -410,7 +430,12 @@ final class VideoSession {
     }
 
     private void translate(String target, String configuredSource, TranscriptCue selected, Runnable onFinished) {
-        if (OfflineModels.pending(models.translation)) {
+        translate(target, configuredSource, selected, onFinished, false, null);
+    }
+
+    private void translate(String target, String configuredSource, TranscriptCue selected,
+                           Runnable onFinished, boolean retranslate, String deepLKey) {
+        if (deepLKey == null && OfflineModels.pending(models.translation)) {
             changed.accept("Đang quản lý model dịch. Hãy đợi thao tác hoàn tất.");
             return;
         }
@@ -424,14 +449,15 @@ final class VideoSession {
 
         int translatedBefore = RecentVideoStatus.translatedCount(cues, targetLanguage, target);
         translationModelUnavailable = false;
-        TranslationBatch batch = new TranslationBatch(cues, targetLanguage, target, selected);
+        boolean online = deepLKey != null;
+        TranslationBatch batch = new TranslationBatch(cues, targetLanguage, target, selected, retranslate);
         List<TranscriptCue> input = batch.input;
         if (input.isEmpty()) {
             busy = false;
             changed.accept("Bản dịch đã đầy đủ.");
             return;
         }
-        translator = new TranslationClient();
+        translator = new TranslationClient(deepLKey);
         runningTask = Task.TRANSLATION;
         translationTaskTarget = target;
         changed.accept("Đang chuẩn bị model dịch…");
@@ -467,7 +493,7 @@ final class VideoSession {
                 runningTask = null;
                 boolean complete = target.equals(targetLanguage) && missingTranslations() == 0;
                 int translated = RecentVideoStatus.translatedCount(cues, targetLanguage, target);
-                if (translated == translatedBefore && !complete) {
+                if (!complete && (online || translated == translatedBefore)) {
                     failedTask = Task.TRANSLATION;
                     failedTarget = target;
                 } else if (complete || (failedTask == Task.TRANSLATION && target.equals(failedTarget))) {

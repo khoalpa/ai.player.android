@@ -45,6 +45,7 @@ final class PlaybackSessionStore {
         final String target;
         final List<TranscriptCue> cues;
         String name = "Video";
+        String transcriptOrigin;
         boolean suppressCache;
         VideoSession.Task failedTask;
         String failedTarget;
@@ -169,6 +170,7 @@ final class PlaybackSessionStore {
         boolean sameIdentity = identity.equals(preferences.getString("identity", null));
         String source = sameIdentity ? preferences.getString("source", null) : null;
         String target = sameIdentity ? preferences.getString("target", null) : null;
+        String transcriptOrigin = null;
         boolean suppressCache = false;
         String failedTarget = null;
         VideoSession.Task failedTask = null;
@@ -179,6 +181,7 @@ final class PlaybackSessionStore {
                 JSONObject saved = new JSONObject(new String(file.readFully(), StandardCharsets.UTF_8));
                 if (identity.equals(saved.optString("identity"))) {
                     json = saved.getJSONArray("cues").toString();
+                    transcriptOrigin = saved.optString("transcript_origin", null);
                     suppressCache = saved.optBoolean("transcript_removed");
                     source = saved.isNull("source") ? null : saved.optString("source", null);
                     target = saved.isNull("target") ? null : saved.optString("target", null);
@@ -207,6 +210,7 @@ final class PlaybackSessionStore {
         }
         Snapshot result = new Snapshot(uri, identity, sameIdentity ? preferences.getLong("position", 0) : 0,
                 cues.isEmpty() ? null : source, cues.isEmpty() ? null : target, cues);
+        result.transcriptOrigin = cues.isEmpty() ? null : transcriptOrigin;
         result.suppressCache = suppressCache;
         result.failedTask = failedTask;
         result.failedTarget = failedTarget;
@@ -239,8 +243,7 @@ final class PlaybackSessionStore {
     void inspect(Consumer<List<StoredTranscript>> callback) {
         IO.execute(() -> {
             List<StoredTranscript> result = new ArrayList<>();
-            File[] files = new File(context.getApplicationInfo().dataDir, "shared_prefs")
-                    .listFiles(file -> file.getName().matches("playback_video_[a-f0-9-]+[.]xml"));
+            File[] files = videoPreferenceFiles();
             List<RecentVideo> recent = recentVideos();
             if (files != null) synchronized (FILE_LOCK) {
                 for (File file : files) {
@@ -284,6 +287,7 @@ final class PlaybackSessionStore {
                     }
                     Snapshot removed = new Snapshot(current.uri, current.identity, current.position,
                             translationOnly ? current.source : null, null, current.cues);
+                    removed.transcriptOrigin = translationOnly ? current.transcriptOrigin : null;
                     removed.suppressCache = !translationOnly;
                     if (translationOnly && current.failedTask == VideoSession.Task.TRANSCRIPT) {
                         removed.failedTask = current.failedTask;
@@ -315,6 +319,7 @@ final class PlaybackSessionStore {
                                 ? defaultTarget : current.target;
                         result = new Snapshot(current.uri, current.identity, current.position,
                                 current.source, target, current.cues);
+                        result.transcriptOrigin = current.transcriptOrigin;
                         result.name = expected.name;
                         result.failedTask = current.failedTask;
                         result.failedTarget = current.failedTarget;
@@ -341,15 +346,11 @@ final class PlaybackSessionStore {
                 && expected.translationNeedsReview == current.translationNeedsReview;
     }
 
-    void save(Uri uri, String identity, long position, VideoSession session) {
-        save(uri, identity, position, session, true);
-    }
-
     void checkpoint(VideoSession session) {
         if (session.videoUri() != null) save(session.videoUri(), session.identity(), 0, session, false);
     }
 
-    private void save(Uri uri, String identity, long position, VideoSession session, boolean updatePosition) {
+    void save(Uri uri, String identity, long position, VideoSession session, boolean updatePosition) {
         if (identity == null) return;
         List<TranscriptCue> snapshot = new ArrayList<>();
         for (TranscriptCue cue : session.completedCues()) {
@@ -357,6 +358,7 @@ final class PlaybackSessionStore {
         }
         Snapshot state = new Snapshot(uri, identity, position, session.completedSource(), session.completedTarget(),
                 snapshot);
+        state.transcriptOrigin = session.transcriptOrigin();
         state.failedTask = session.failedTask();
         state.failedTarget = session.failedTarget();
         IO.execute(() -> {
@@ -382,6 +384,7 @@ final class PlaybackSessionStore {
             }
             JSONObject data = new JSONObject().put("identity", state.identity).put("cues", array)
                     .put("source", state.source).put("target", state.target)
+                    .put("transcript_origin", state.transcriptOrigin)
                     .put("transcript_removed", state.suppressCache)
                     .put("failed_target", state.failedTarget)
                     .put("failed_task", state.failedTask == null ? null : state.failedTask.name());
@@ -392,8 +395,10 @@ final class PlaybackSessionStore {
             SharedPreferences.Editor edit = video.edit().putString("identity", state.identity)
                     .putString("source", state.source).putString("target", state.target)
                     .remove("cues");
-            if (updatePosition || !state.identity.equals(video.getString("identity", null))) {
+            if (updatePosition) {
                 edit.putLong("position", state.position);
+            } else if (!state.identity.equals(video.getString("identity", null))) {
+                edit.remove("position");
             }
             boolean saved = edit.commit();
             RECENT_SUMMARIES.remove(state.uri);
@@ -526,6 +531,41 @@ final class PlaybackSessionStore {
     void removeRecent(Uri uri) {
         List<RecentVideo> recent = recentVideos();
         if (recent.removeIf(video -> uri.equals(video.uri))) writeRecent(recent);
+    }
+
+    void clearHistory(Uri uri, Consumer<Boolean> completion) {
+        if (uri == null) {
+            preferences.edit().remove("video").remove("recent_videos").apply();
+        } else {
+            removeRecent(uri);
+        }
+        IO.execute(() -> {
+            boolean saved = true;
+            if (uri != null) {
+                saved = clearPosition(videoPreferences(uri));
+            } else {
+                File[] files = videoPreferenceFiles();
+                if (files != null) {
+                    for (File file : files) {
+                        String name = file.getName();
+                        SharedPreferences video = context.getSharedPreferences(
+                                name.substring(0, name.length() - 4), Context.MODE_PRIVATE);
+                        saved &= clearPosition(video);
+                    }
+                }
+            }
+            boolean success = saved;
+            main.post(() -> completion.accept(success));
+        });
+    }
+
+    private File[] videoPreferenceFiles() {
+        return new File(context.getApplicationInfo().dataDir, "shared_prefs")
+                .listFiles(file -> file.getName().matches("playback_video_[a-f0-9-]+[.]xml"));
+    }
+
+    private static boolean clearPosition(SharedPreferences video) {
+        return video.edit().remove("position").commit();
     }
 
     private void writeRecent(List<RecentVideo> recent) {

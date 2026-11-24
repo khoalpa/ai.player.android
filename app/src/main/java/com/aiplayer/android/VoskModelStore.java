@@ -55,6 +55,26 @@ final class VoskModelStore {
         this.context = context.getApplicationContext();
     }
 
+    private static final java.util.Map<String, String> LARGE_MODELS = largeModels();
+
+    private static java.util.Map<String, String> largeModels() {
+        java.util.Map<String, String> models = new java.util.LinkedHashMap<>();
+        models.put("vi-large", "vosk-model-vn-0.4");
+        models.put("ja-large", "vosk-model-ja-0.22");
+        models.put("en-large", "vosk-model-en-us-0.22");
+        models.put("zh-large", "vosk-model-cn-0.22");
+        return java.util.Collections.unmodifiableMap(models);
+    }
+
+    static java.util.Set<String> largeModelKeys() {
+        return LARGE_MODELS.keySet();
+    }
+
+    static String largeModelKey(String language) {
+        String key = language + "-large";
+        return LARGE_MODELS.containsKey(key) ? key : null;
+    }
+
     static String modelVersion(String sourceLanguage) {
         return specFor(sourceLanguage).url;
     }
@@ -296,10 +316,19 @@ final class VoskModelStore {
         file.delete();
     }
 
+    static String modelName(String language) {
+        String url = specFor(language).url;
+        return url.substring(url.lastIndexOf('/') + 1, url.length() - ".zip".length());
+    }
+
     private static ModelSpec specFor(String sourceLanguage) {
         String language = sourceLanguage == null ? "" : sourceLanguage.trim().toLowerCase(Locale.US);
         if ("ja".equals(language) || "jp".equals(language)) {
             return new ModelSpec("model-ja", "https://alphacephei.com/vosk/models/vosk-model-small-ja-0.22.zip");
+        }
+        String largeModel = LARGE_MODELS.get(language);
+        if (largeModel != null) {
+            return new ModelSpec("model-" + language, "https://alphacephei.com/vosk/models/" + largeModel + ".zip");
         }
         if ("vi".equals(language) || "vn".equals(language)) {
             return new ModelSpec("model-vi", "https://alphacephei.com/vosk/models/vosk-model-small-vn-0.4.zip");

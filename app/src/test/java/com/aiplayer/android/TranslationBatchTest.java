@@ -25,6 +25,18 @@ public class TranslationBatchTest {
         assertSame(cues.get(2), resumed.input.get(0));
     }
 
+    @Test public void retranslateSameLanguageReplacesOnlySuccessfulResults() {
+        List<TranscriptCue> cues = cues();
+        cues.get(1).setTranslation("hai", TranscriptCue.TranslationOrigin.MANUAL);
+        TranslationBatch batch = new TranslationBatch(cues, "vi", "vi", null, true);
+
+        assertEquals(cues, batch.input);
+        batch.accept(0, "một mới");
+        assertEquals("một mới", cues.get(0).targetText);
+        assertEquals("hai", cues.get(1).targetText);
+        assertEquals(TranscriptCue.TranslationOrigin.MANUAL, cues.get(1).translationOrigin);
+    }
+
     @Test public void failedLanguageChangeLeavesExistingTranslationIntact() {
         List<TranscriptCue> cues = cues();
         TranslationBatch batch = new TranslationBatch(cues, "vi", "en");
@@ -77,5 +89,17 @@ public class TranslationBatchTest {
         assertEquals(TranscriptCue.TranslationOrigin.AUTOMATIC, original.translationOrigin);
         assertEquals("hai", manual.targetText);
         assertEquals(TranscriptCue.TranslationOrigin.MANUAL, manual.translationOrigin);
+    }
+    @Test public void onlineResumeKeepsManualTranslationAndCompletedBatch() {
+        List<TranscriptCue> cues = cues();
+        cues.get(0).setTranslation("manual", TranscriptCue.TranslationOrigin.MANUAL);
+        TranslationBatch firstBatch = new TranslationBatch(cues, "vi", "vi");
+        firstBatch.accept(0, "translated");
+
+        TranslationBatch resume = new TranslationBatch(cues, "vi", "vi");
+        assertEquals(Arrays.asList(cues.get(2)), resume.input);
+        assertEquals("translated", cues.get(1).targetText);
+        assertEquals("manual", cues.get(0).targetText);
+        assertEquals(TranscriptCue.TranslationOrigin.MANUAL, cues.get(0).translationOrigin);
     }
 }
