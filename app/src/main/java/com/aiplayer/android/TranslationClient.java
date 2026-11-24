@@ -215,7 +215,7 @@ final class TranslationClient {
         callback.onFinished(
                 completed - state.failed,
                 "Đã dịch offline " + state.translated + "/" + state.total
-                        + " đoạn, cache " + state.cached
+                        + " câu, cache " + state.cached
                         + ", bỏ qua " + state.skipped
                         + (state.failed > 0 ? ", lỗi " + state.failed : "")
                         + "."

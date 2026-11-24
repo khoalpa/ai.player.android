@@ -53,7 +53,7 @@ final class RecentVideoStatus {
         }
         if (translated == total) return new RecentVideoStatus("Có transcript · Đã dịch", SUCCESS);
         if (translated > 0) {
-            String progress = "Có transcript · Dịch " + translated + "/" + total + " đoạn";
+            String progress = "Có transcript · Dịch " + translated + "/" + total + " câu";
             return new RecentVideoStatus(failed == VideoSession.Task.TRANSLATION
                     ? progress + " · Lần dịch gần nhất bị lỗi" : progress,
                     failed == VideoSession.Task.TRANSLATION ? ERROR : WARNING);

@@ -284,7 +284,7 @@ final class OriginalAudioCaptionGenerator {
                         List<TranscriptCue> batch = new ArrayList<>(stable - published);
                         for (int i = published; i < stable; i++) {
                             TranscriptCue cue = cues.get(i);
-                            batch.add(new TranscriptCue(cue.startMs, cue.endMs, cue.sourceText));
+                            batch.add(cue.copy());
                         }
                         published = stable;
                         lastPublishMs = now;
@@ -361,6 +361,7 @@ final class OriginalAudioCaptionGenerator {
         long groupStartMs = -1;
         long groupEndMs = -1;
         StringBuilder groupText = new StringBuilder();
+        JSONArray wordStarts = new JSONArray();
         for (int i = 0; i < words.length(); i++) {
             JSONObject word = words.optJSONObject(i);
             if (word == null) {
@@ -379,7 +380,8 @@ final class OriginalAudioCaptionGenerator {
                     || endMs - groupStartMs > MAX_CUE_DURATION_MS
                     || groupText.length() + token.length() + 1 > MAX_CUE_CHARS);
             if (shouldSplit) {
-                addWordGroupCue(cues, groupStartMs, groupEndMs, groupText.toString());
+                addWordGroupCue(cues, groupStartMs, groupEndMs, groupText.toString(), wordStarts);
+                wordStarts = new JSONArray();
                 groupStartMs = -1;
                 groupEndMs = -1;
                 groupText.setLength(0);
@@ -390,22 +392,26 @@ final class OriginalAudioCaptionGenerator {
             if (groupText.length() > 0) {
                 groupText.append(' ');
             }
+            wordStarts.put(new JSONArray().put(groupText.length()).put(startMs));
             groupText.append(token);
             groupEndMs = Math.max(groupEndMs, endMs);
         }
         if (groupText.length() > 0) {
-            addWordGroupCue(cues, groupStartMs, groupEndMs, groupText.toString());
+            addWordGroupCue(cues, groupStartMs, groupEndMs, groupText.toString(), wordStarts);
         }
     }
 
-    private void addWordGroupCue(List<TranscriptCue> cues, long startMs, long endMs, String text) {
+    private void addWordGroupCue(List<TranscriptCue> cues, long startMs, long endMs, String text,
+                                 JSONArray wordStarts) {
         String cleanText = text == null ? "" : text.trim();
         if (cleanText.isEmpty() || startMs < 0 || endMs <= startMs) {
             return;
         }
         long cueStartMs = Math.max(0, startMs - CUE_LEAD_IN_MS);
         long cueEndMs = Math.max(cueStartMs + 250, endMs + CUE_TAIL_MS);
-        cues.add(new TranscriptCue(cueStartMs, cueEndMs, cleanText));
+        TranscriptCue cue = new TranscriptCue(cueStartMs, cueEndMs, cleanText);
+        cue.wordStarts = wordStarts;
+        cues.add(cue);
     }
 
     private void trimOverlaps(List<TranscriptCue> cues, int startIndex) {
@@ -424,6 +430,7 @@ final class OriginalAudioCaptionGenerator {
     private TranscriptCue copyCue(TranscriptCue cue, long startMs, long endMs) {
         TranscriptCue copy = new TranscriptCue(startMs, endMs, cue.sourceText);
         copy.setTranslation(cue.targetText, cue.translationOrigin);
+        copy.wordStarts = cue.wordStarts;
         return copy;
     }
 

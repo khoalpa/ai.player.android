@@ -106,7 +106,10 @@ final class TranscriptCache {
                     List<TranscriptCue> result = new ArrayList<>(array.length());
                     for (int i = 0; i < array.length(); i++) {
                         JSONObject cue = array.getJSONObject(i);
-                        result.add(new TranscriptCue(cue.getLong("start"), cue.getLong("end"), cue.getString("text")));
+                        TranscriptCue restored = new TranscriptCue(cue.getLong("start"), cue.getLong("end"),
+                                cue.getString("text"));
+                        restored.wordStarts = cue.optJSONArray("word_starts");
+                        result.add(restored);
                     }
                     if (!result.isEmpty()) {
                         latest = new Entry(result, saved == null ? null : saved.optString("origin", null));
@@ -128,7 +131,7 @@ final class TranscriptCache {
             JSONArray array = new JSONArray();
             for (TranscriptCue cue : cues) {
                 array.put(new JSONObject().put("start", cue.startMs).put("end", cue.endMs)
-                        .put("text", cue.sourceText));
+                        .put("text", cue.sourceText).put("word_starts", cue.wordStarts));
             }
             output = file.startWrite();
             JSONObject saved = new JSONObject().put("cues", array).put("origin", origin);

@@ -196,6 +196,8 @@ final class PlaybackSessionStore {
                 JSONObject row = array.getJSONObject(i);
                 TranscriptCue cue = new TranscriptCue(row.getLong("start"), row.getLong("end"),
                         row.getString("source"));
+                cue.wordStarts = row.optJSONArray("word_starts");
+                cue.sentence = row.optBoolean("sentence");
                 String text = row.optString("target", "");
                 String origin = row.optString("translation_origin");
                 cue.setTranslation(text, "MANUAL".equals(origin) ? TranscriptCue.TranslationOrigin.MANUAL
@@ -207,6 +209,17 @@ final class PlaybackSessionStore {
         } catch (Exception ex) {
             Log.w("PlaybackSessionStore", "Could not restore transcript", ex);
             cues.clear();
+        }
+        if (cues.stream().anyMatch(cue -> !cue.sentence)) {
+            AppSettings settings = AppSettings.load(context);
+            String configuredTarget = settings.targetLanguage;
+            SentenceTranscriptEdits edits = new SentenceTranscriptEdits(
+                    context.getSharedPreferences(SentenceTranscriptEdits.PREFERENCES, Context.MODE_PRIVATE));
+            cues = edits.migrate(uri.toString(), cues, source == null ? settings.sourceLanguage : source,
+                    target, configuredTarget, true);
+            if (target == null && cues.stream().anyMatch(TranscriptCue::hasTranslation)) {
+                target = configuredTarget;
+            }
         }
         Snapshot result = new Snapshot(uri, identity, sameIdentity ? preferences.getLong("position", 0) : 0,
                 cues.isEmpty() ? null : source, cues.isEmpty() ? null : target, cues);
@@ -220,12 +233,14 @@ final class PlaybackSessionStore {
     static final class StoredTranscript {
         final Snapshot snapshot;
         final long bytes;
+        final long sentenceTranslationBytes;
         final boolean translated;
 
-        StoredTranscript(Snapshot snapshot, long bytes) {
+        StoredTranscript(Snapshot snapshot, long bytes, long sentenceTranslationBytes) {
             this.snapshot = snapshot;
-            this.bytes = bytes;
-            translated = snapshot.cues.stream().anyMatch(TranscriptCue::hasTranslation);
+            this.bytes = bytes + sentenceTranslationBytes;
+            this.sentenceTranslationBytes = sentenceTranslationBytes;
+            translated = sentenceTranslationBytes > 0 || snapshot.cues.stream().anyMatch(TranscriptCue::hasTranslation);
         }
     }
 
@@ -246,6 +261,18 @@ final class PlaybackSessionStore {
             File[] files = videoPreferenceFiles();
             List<RecentVideo> recent = recentVideos();
             if (files != null) synchronized (FILE_LOCK) {
+                java.util.Map<String, Long> sentenceTranslations = new java.util.HashMap<>();
+                SharedPreferences sentences = context.getSharedPreferences(
+                        SentenceTranscriptEdits.PREFERENCES, Context.MODE_PRIVATE);
+                for (java.util.Map.Entry<String, ?> entry : sentences.getAll().entrySet()) {
+                    String key = entry.getKey();
+                    int separator = key.indexOf('\n');
+                    if (separator >= 0 && key.indexOf('\n', separator + 1) >= 0
+                            && entry.getValue() instanceof String && !((String) entry.getValue()).trim().isEmpty()) {
+                        long bytes = ((String) entry.getValue()).getBytes(StandardCharsets.UTF_8).length;
+                        sentenceTranslations.merge(key.substring(0, separator), bytes, Long::sum);
+                    }
+                }
                 for (File file : files) {
                     String filename = file.getName();
                     SharedPreferences saved = context.getSharedPreferences(
@@ -262,7 +289,8 @@ final class PlaybackSessionStore {
                     }
                     long bytes = transcriptFile(uri).getBaseFile().length();
                     if (bytes == 0) bytes = saved.getString("cues", "").getBytes(StandardCharsets.UTF_8).length;
-                    result.add(new StoredTranscript(snapshot, bytes));
+                    result.add(new StoredTranscript(snapshot, bytes,
+                            sentenceTranslations.getOrDefault(uri.toString(), 0L)));
                 }
             }
             result.sort(java.util.Comparator.comparingLong((StoredTranscript entry) -> entry.bytes).reversed());
@@ -293,6 +321,9 @@ final class PlaybackSessionStore {
                         removed.failedTask = current.failedTask;
                     }
                     if (writeSnapshotLocked(removed, false)) {
+                        new SentenceTranscriptEdits(context.getSharedPreferences(
+                                SentenceTranscriptEdits.PREFERENCES, Context.MODE_PRIVATE))
+                                .remove(current.uri.toString(), translationOnly);
                         result = removed;
                         result.name = requested.name;
                     }
@@ -378,6 +409,8 @@ final class PlaybackSessionStore {
             for (TranscriptCue cue : state.cues) {
                 array.put(new JSONObject().put("start", cue.startMs).put("end", cue.endMs)
                         .put("source", cue.sourceText).put("target", cue.targetText)
+                        .put("word_starts", cue.wordStarts)
+                        .put("sentence", cue.sentence ? Boolean.TRUE : null)
                         .put("translation_origin", cue.translationOrigin == TranscriptCue.TranslationOrigin.AUTOMATIC
                                 ? null : cue.translationOrigin.name())
                         .put("translation_needs_review", cue.translationNeedsReview ? Boolean.TRUE : null));

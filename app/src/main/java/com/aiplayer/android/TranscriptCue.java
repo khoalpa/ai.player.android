@@ -1,5 +1,7 @@
 package com.aiplayer.android;
 
+import org.json.JSONArray;
+
 final class TranscriptCue {
     enum TranslationOrigin { AUTOMATIC, ORIGINAL, MANUAL }
 
@@ -9,6 +11,8 @@ final class TranscriptCue {
     String targetText;
     TranslationOrigin translationOrigin = TranslationOrigin.AUTOMATIC;
     boolean translationNeedsReview;
+    JSONArray wordStarts;
+    boolean sentence;
 
     boolean hasTranslation() {
         return targetText != null && !targetText.trim().isEmpty();
@@ -36,6 +40,8 @@ final class TranscriptCue {
         TranscriptCue copy = new TranscriptCue(startMs, endMs, sourceText);
         copy.setTranslation(targetText, translationOrigin);
         copy.translationNeedsReview = translationNeedsReview;
+        copy.wordStarts = wordStarts;
+        copy.sentence = sentence;
         return copy;
     }
 

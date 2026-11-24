@@ -61,15 +61,23 @@ Nếu gặp `INSTALL_FAILED_UPDATE_INCOMPATIBLE`, APK đang cài và APK mới c
 
 ## Transcript, bản dịch và phụ đề
 
-1. Vào **Cài đặt → Ngôn ngữ và phụ đề** để chọn ngôn ngữ nguồn và đích. Mặc định là tiếng Nhật sang tiếng Việt. Vosk hỗ trợ nhận dạng tiếng Nhật, Anh, Việt, Hàn và Trung.
-2. Chọn **Tạo transcript** và chọn track âm thanh nếu video có nhiều track. Có thể dùng **Nhập SRT/VTT** khi đã có phụ đề theo thời gian.
-3. Chọn **Dịch**. Trong **Cài đặt → Quản lý model**, có thể tải trước model nhận dạng và dịch qua Wi-Fi hoặc dữ liệu di động để dùng offline. Tiếng Anh là ngôn ngữ trung gian của ML Kit và không cần tải gói dịch riêng.
-4. Nếu bản dịch còn thiếu, chọn **Dịch lại N đoạn thiếu**. Khi cần xử lý từng đoạn, chọn **Xử lý N đoạn thiếu**, mở đoạn theo mốc thời gian, nghe lại hoặc chỉnh lời gốc và ngôn ngữ nguồn, rồi dịch đoạn đó. Các đoạn đã dịch được giữ lại.
-5. Chọn nội dung **Gốc** hoặc **Dịch** riêng cho **Phụ đề** và **Phát âm**. Giọng đọc phụ thuộc vào các giọng TextToSpeech mà Android cung cấp. Vào **Cài đặt → Âm thanh → Chọn giọng đọc** để chọn ngôn ngữ, nghe thử và lưu lựa chọn. Có thể chạm vào một đoạn trong danh sách transcript để tua đến mốc đó.
+1. Trong **Cài đặt → Ngôn ngữ và phụ đề**, chọn ngôn ngữ nguồn và đích. Mặc định là tiếng Nhật sang tiếng Việt. Vosk hỗ trợ nhận dạng tiếng Nhật, Anh, Việt, Hàn và Trung.
+2. Chọn **Tạo transcript** và chọn track âm thanh nếu video có nhiều track. Nếu đã có phụ đề theo thời gian, dùng **Nhập phụ đề (SRT/VTT)** trong menu **⋯**.
+3. Danh sách transcript trong trình phát hiển thị lời gốc theo câu. Khi có bản dịch, mỗi câu đã dịch hiển thị cả lời gốc và bản dịch. Chạm vào câu để tua đến mốc thời gian tương ứng.
+4. Dùng **Phụ đề** và **Phát âm** để chọn lời gốc hoặc bản dịch cho từng chức năng. Cả hai bám theo mốc thời gian của câu. Vào **Cài đặt → Âm thanh → Chọn giọng đọc** để chọn và nghe thử giọng TextToSpeech trên thiết bị.
 
-Để dịch phụ đề sang tiếng Việt theo ngữ cảnh trên Android ARM64, tải **Qwen3-4B Q4_K_M** (khoảng 2,5 GB) trong **Cài đặt → Quản lý model → Dịch**, rồi chọn **Dịch → Ngữ cảnh** trong trình phát. Sau khi tải model, toàn bộ quá trình dịch chạy trên thiết bị. Bản dịch được giữ ở bước xem trước cho đến khi bấm **Áp dụng**.
+### Hai chế độ dịch ngoại tuyến
 
-Trong menu **⋯** của trình phát, dùng **Xuất tệp** hoặc **Chia sẻ** để lưu hay gửi transcript và bản dịch dưới dạng TXT hoặc SRT.
+| Chế độ | Cách hoạt động | Model |
+| --- | --- | --- |
+| **Dịch → Theo câu** | ML Kit dịch từng câu theo cặp ngôn ngữ đã chọn. | Tải các gói ngôn ngữ cần thiết trong **Cài đặt → Quản lý model → Dịch**. Tiếng Anh là ngôn ngữ trung gian và không cần gói riêng. |
+| **Dịch → Ngữ cảnh** | Qwen phân tích transcript của cả video để xây dựng hướng dẫn chung, rồi dùng hướng dẫn đó cùng các câu lân cận khi dịch sang tiếng Việt. Kết quả vẫn gắn với từng câu và mốc thời gian gốc. | Tải **Qwen3-4B Q4_K_M** (khoảng 2,5 GB) trong **Cài đặt → Quản lý model → Dịch**. |
+
+**Ngữ cảnh** giúp chọn cách xưng hô phù hợp với quan hệ nhân vật, giữ tên riêng và thuật ngữ nhất quán, đồng thời dịch tiếng lóng và thành ngữ theo ý người nói. Xem trước kết quả rồi bấm **Áp dụng** để lưu. Cả hai chế độ chạy trên thiết bị sau khi tải đủ model.
+
+Nếu còn câu chưa dịch, dùng **Dịch lại N câu thiếu** để thử lại hoặc **Xử lý N câu thiếu** để mở từng câu, nghe lại, sửa lời gốc và dịch lại.
+
+Trong menu **⋯** của trình phát, dùng **Xuất tệp** hoặc **Chia sẻ** để lưu hay gửi transcript gốc, bản dịch hoặc nội dung song ngữ dưới dạng TXT hoặc SRT.
 
 Có thể đóng gói model nhận dạng Vosk vào APK theo [hướng dẫn model Vosk](app/src/main/assets/README-vosk-models.txt).
 
@@ -130,7 +138,7 @@ Dùng **Build → Generate Signed Bundle / APK** trong Android Studio để tạ
 | `MainActivity`, Media3 | Giao diện, điều khiển video và cung cấp vị trí phát |
 | `VideoSession` | Track âm thanh, transcript, tác vụ dịch và hủy kết quả cũ |
 | `OriginalAudioCaptionGenerator`, `VoskModelStore` | Giải mã track và nhận dạng lời nói |
-| `TranscriptParser`, `TranslationClient` | Nhập phụ đề và dịch từng đoạn |
+| `TranscriptParser`, `TranslationClient` | Nhập phụ đề và dịch từng câu |
 | `CueTimeline`, `CueSpeech` | Chọn đoạn theo vị trí phát và điều khiển giọng đọc |
 | `VideoWork`, `VideoWorkService` | Giữ tác vụ ngoài Activity, thông báo nền, hủy và checkpoint bản dịch |
 
@@ -139,7 +147,7 @@ Dùng **Build → Generate Signed Bundle / APK** trong Android Studio để tạ
 - Định danh video được tính một lần khi mở rồi dùng lại cho cache trong phiên. Khi chọn/mở lại video, ứng dụng xác minh lại định danh để phát hiện thay đổi nội dung; không hỗ trợ thay nội dung tệp trong lúc tác vụ đang đọc chính tệp đó.
 - Truy vấn tên, metadata và hash chạy ở luồng nền. Đổi lựa chọn video hủy yêu cầu trước, gửi tín hiệu hủy tới provider và đóng luồng đọc đang mở. Provider cần hỗ trợ hủy/đóng luồng để ngắt được thao tác I/O đang bị chặn.
 - Nhận dạng/dịch tiếp tục khi rời màn hình hoặc Activity bị tạo lại trong cùng tiến trình. Thông báo xử lý có nút **Hủy** và mở lại ứng dụng; Android 13+ hỏi quyền thông báo ở tác vụ đầu tiên. Từ chối quyền không chặn xử lý nhưng thông báo có thể chỉ xuất hiện trong trình quản lý tác vụ hệ thống.
-- Dịch ghi nhận kết quả theo từng đoạn, checkpoint tối đa khoảng mỗi 2 giây khi có tiến độ, và lưu ngay khi hoàn tất/hủy/rời Activity. Sau khi tiến trình bị đóng, mở lại video rồi dùng tùy chọn dịch các đoạn thiếu để tiếp tục. Một lần đổi ngôn ngữ chỉ xóa bản dịch cũ khi có kết quả mới đầu tiên, tránh trộn hai ngôn ngữ.
+- Dịch theo câu ghi nhận kết quả theo từng câu, checkpoint tối đa khoảng mỗi 2 giây khi có tiến độ, và lưu ngay khi hoàn tất/hủy/rời Activity. Sau khi tiến trình bị đóng, mở lại video rồi dùng tùy chọn dịch các câu thiếu để tiếp tục. Một lần đổi ngôn ngữ chỉ xóa bản dịch cũ khi có kết quả mới đầu tiên, tránh trộn hai ngôn ngữ.
 - Transcript/bản dịch được lưu trong tệp JSON riêng bằng `AtomicFile`; preferences chỉ giữ metadata/vị trí. Dữ liệu phiên cũ trong preferences vẫn đọc được và được chuyển sang tệp ở lần lưu tiếp theo.
 - Chưa lưu trạng thái nội bộ recognizer Vosk: nếu tiến trình bị đóng/force-stop trong lúc nhận dạng, cần tạo lại transcript từ đầu; transcript hoàn chỉnh trước đó vẫn được giữ. Foreground service giảm nguy cơ gián đoạn nhưng không bảo đảm sống qua force-stop hoặc khởi động lại thiết bị.
 - Android 15+ dùng foreground service loại `mediaProcessing`, các phiên bản trước dùng `dataSync`. Có xử lý timeout hệ thống và giới hạn mỗi phiên dịch vụ tối đa 6 giờ; khi hết hạn, ứng dụng dừng tác vụ và giữ bản dịch đã ghi nhận. Khóa CPU được giải phóng khi dịch vụ dừng.
@@ -158,7 +166,7 @@ Dùng **Build → Generate Signed Bundle / APK** trong Android Studio để tạ
 - Video từ provider không cung cấp kích thước/ngày sửa: mở lại phải giữ vị trí, transcript và bản dịch. Trường hợp này ứng dụng đọc toàn bộ tệp ở luồng nền để tính SHA-256; video lớn hoặc trên cloud có thể mất thêm thời gian. Thay nội dung ở cùng URI phải vô hiệu hóa phiên cũ.
 - Model có `conf/model.conf` nhưng hỏng dữ liệu: tạo transcript phải thử tải lại một lần. Nếu model mới vẫn không nạp được, báo lỗi và cho phép thử lại; không lặp tải vô hạn. Kiểm tra hủy trong lúc phục hồi.
 - Video có track bắt đầu trễ hoặc timestamp gián đoạn: kiểm tra cả phụ đề xem trước và kết quả cuối sau khoảng gián đoạn. Thời gian từ Vosk được ánh xạ theo timestamp PCM decoder.
-- Khi dịch một số đoạn thất bại: chế độ Bản dịch không hiển thị bản gốc như bản dịch. Danh sách ghi rõ đoạn thiếu kèm bản gốc, nút chuyển ngôn ngữ hiển thị số đoạn thiếu; dùng tùy chọn dịch lại hoặc xử lý từng đoạn còn thiếu.
+- Khi một số câu dịch thất bại, kiểm tra danh sách vẫn hiển thị lời gốc của các câu đó và cho phép dịch lại hoặc xử lý từng câu thiếu.
 - `AudioTimestampMapTest` kiểm tra offset, khoảng trống, timestamp lùi và sai số tích lũy; `ContentFingerprintTest` kiểm tra thay đổi cuối tệp và ngắt tính hash; `CueTimelineTest` kiểm tra đoạn thiếu bản dịch.
 
 - Khi chưa có model: bắt đầu tạo transcript, hủy trong lúc tải, rồi tạo lại hoặc mở video khác. Kết quả tác vụ cũ không được cập nhật vào phiên mới; tệp giải nén tạm được dọn dẹp.
