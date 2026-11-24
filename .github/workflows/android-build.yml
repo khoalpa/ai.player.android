@@ -24,7 +24,7 @@ jobs:
       - name: Configure Android SDK
         run: |
           echo "ANDROID_HOME=${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}" >> "$GITHUB_ENV"
-          "${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-36" "build-tools;36.0.0"
+          "${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358" "cmake;3.22.1"
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
       - name: Build pinned TDLib JSONJava and verify JNI bindings
@@ -50,11 +50,12 @@ jobs:
           ./gradlew --no-daemon --stacktrace
           :app:assembleStandaloneDebug :app:testStandaloneDebugUnitTest :app:lintStandaloneDebug
           :app:assemblePlayDebug :app:testPlayDebugUnitTest :app:lintPlayDebug
-      - name: Verify TDLib is packaged in the standard APK
+        - name: Verify native libraries are packaged in the standard APK
         run: |
           for flavor in standalone play; do
             apk="app/build/outputs/apk/$flavor/debug/app-$flavor-debug.apk"
             unzip -l "$apk" | grep -F 'lib/arm64-v8a/libtdjsonjava.so'
+              unzip -l "$apk" | grep -F 'lib/arm64-v8a/libaiplayer_context.so'
             "${ANDROID_HOME}/build-tools/36.0.0/zipalign" -c -P 16 -v 4 "$apk"
           done
       - name: Build unsigned release packages

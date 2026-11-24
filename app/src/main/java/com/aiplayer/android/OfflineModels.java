@@ -23,6 +23,12 @@ final class OfflineModels {
     enum Operation { DOWNLOADING, DELETING, DOWNLOAD_FAILED, DELETE_FAILED }
 
     final VoskModelStore vosk;
+    final ContextModelStore contextual;
+    Operation contextOperation;
+    long contextBytes;
+    long contextTotal = -1;
+    private volatile boolean contextCancelRequested;
+    String contextError;
     final Map<String, Operation> recognition = new HashMap<>();
     final Map<String, Operation> translation = new HashMap<>();
     final Set<String> downloadedTranslations = new HashSet<>();
@@ -38,6 +44,7 @@ final class OfflineModels {
 
     OfflineModels(Context context, Runnable changed) {
         vosk = new VoskModelStore(context);
+        contextual = new ContextModelStore(context);
         connectivity = context.getSystemService(ConnectivityManager.class);
         this.changed = changed;
     }
@@ -46,7 +53,56 @@ final class OfflineModels {
         return operations.containsValue(Operation.DOWNLOADING) || operations.containsValue(Operation.DELETING);
     }
 
-    boolean pending() { return pending(recognition) || pending(translation); }
+    boolean pending() { return pending(recognition) || pending(translation) || contextPending(); }
+
+    boolean contextPending() { return contextOperation == Operation.DOWNLOADING; }
+
+    boolean contextCancelling() { return contextCancelRequested; }
+
+    void cancelContextDownload() {
+        if (!contextPending() || contextCancelling()) return;
+        contextCancelRequested = true;
+        changed.run();
+    }
+
+    void downloadContextModel() {
+        if (contextPending() || contextual.installed() || !ContextModelStore.supported()) return;
+        contextOperation = Operation.DOWNLOADING;
+        contextBytes = contextual.partialBytes();
+        contextTotal = -1;
+        contextCancelRequested = false;
+        contextError = null;
+        changed.run();
+        new Thread(() -> {
+            String failure = null;
+            try {
+                contextual.download(() -> contextCancelRequested, (bytes, total) -> main.post(() -> {
+                    if (contextCancelling()) return;
+                    contextBytes = bytes;
+                    contextTotal = total;
+                    changed.run();
+                }));
+            } catch (Exception error) {
+                failure = error.getMessage();
+                if (failure == null) failure = "Không tải được model dịch theo ngữ cảnh.";
+            }
+            String result = failure;
+            main.post(() -> {
+                contextError = contextCancelling() ? null : result;
+                contextOperation = contextError == null ? null : Operation.DOWNLOAD_FAILED;
+                contextCancelRequested = false;
+                changed.run();
+            });
+        }, "context-model-download").start();
+    }
+
+    void deleteContextModel() {
+        if (contextPending() || !contextual.installed()) return;
+        boolean deleted = contextual.file.delete();
+        contextOperation = deleted ? null : Operation.DELETE_FAILED;
+        contextError = deleted ? null : "Không xóa được model dịch theo ngữ cảnh.";
+        changed.run();
+    }
 
     void refreshTranslations() {
         if (pending(translation)) return;

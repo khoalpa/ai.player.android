@@ -1,6 +1,6 @@
 # AI Player for Android
 
-AI Player phát video bằng Media3, tạo transcript từ lời thoại bằng Vosk, dịch trên thiết bị bằng ML Kit và phát âm phụ đề bằng TextToSpeech của Android.
+AI Player phát video trên Android, tạo transcript từ lời thoại bằng Vosk và đọc phụ đề bằng giọng TextToSpeech của thiết bị. Sau khi tải model, ứng dụng có thể dịch ngoại tuyến bằng ML Kit hoặc dịch sang tiếng Việt theo ngữ cảnh video bằng Qwen.
 
 ## Giao diện ứng dụng
 
@@ -13,7 +13,9 @@ AI Player phát video bằng Media3, tạo transcript từ lời thoại bằng 
 
 ## Cài đặt từ GitHub
 
-Cần thiết bị chạy Android 8.0 (API 26) trở lên.
+Cần thiết bị chạy **Android 8.0 (API 26) trở lên** và hỗ trợ **ARM64 (`arm64-v8a`)**. Yêu cầu này áp dụng cho cả APK Standalone và bản Google Play.
+
+Để kiểm tra ABI qua ADB, chạy `adb shell getprop ro.product.cpu.abilist` và tìm `arm64-v8a` trong kết quả.
 
 ### Cài bản standalone release đã ký
 
@@ -36,7 +38,7 @@ Nếu chưa có bản standalone trên Releases hoặc cần thử một commit 
 
 1. Đăng nhập GitHub và mở workflow [Android build](https://github.com/khoalpa/ai.player.android/actions/workflows/android-build.yml).
 2. Chọn lần chạy thành công mới nhất của nhánh `main` hoặc lần chạy ứng với commit bạn muốn thử. Ở cuối trang **Summary**, tải artifact **ai-player-debug-apk** trong mục **Artifacts**. Artifact được giữ 14 ngày. Nếu đã hết hạn, chọn lần chạy thành công còn artifact hoặc tự build theo hướng dẫn bên dưới.
-3. Giải nén tệp ZIP và lấy `app-standalone-debug.apk`. Đây là bản debug cài trực tiếp để dùng thử.
+3. Giải nén tệp ZIP và lấy `app-standalone-debug.apk` để dùng thử hoặc `app-play-debug.apk` để kiểm thử biến thể Play.
 4. Chuyển APK sang điện thoại nếu tải trên máy tính. Mở APK trên điện thoại, cấp quyền **Cài đặt ứng dụng không rõ nguồn gốc** cho trình duyệt hoặc trình quản lý tệp đang mở APK khi Android yêu cầu, rồi chọn **Cài đặt**.
 
 Nếu dùng ADB, bật **Gỡ lỗi USB**, kết nối điện thoại và chạy lệnh sau từ thư mục chứa APK.
@@ -51,9 +53,11 @@ Nếu gặp `INSTALL_FAILED_UPDATE_INCOMPATIBLE`, APK đang cài và APK mới c
 ## Mở và lưu video
 
 - **Mở video → Chọn tệp trên thiết bị** để phát tệp cục bộ. Màn hình khởi động hiển thị tối đa ba video gần đây và cho phép mở lại tại vị trí đã lưu.
-- **Mở video → Tải video từ URL** để tải video từ liên kết được hỗ trợ. Video tải thành công xuất hiện trong **Video đã lưu**.
+- **Mở video → Tải video từ URL** để tải video từ liên kết được hỗ trợ. Nếu liên kết dẫn đến một trang web, thử **Tìm video trên trang**. Video tải thành công xuất hiện trong **Video đã lưu**.
 - Có thể chia sẻ tệp video từ Telegram sang AI Player bằng menu chia sẻ Android. Với liên kết bài đăng Telegram, ứng dụng có thể thử tải từ bài đăng công khai hoặc dùng tài khoản Telegram qua TDLib. Khả năng tải phụ thuộc vào quyền truy cập và quyền lưu của bài đăng. Xem [luồng nhập Telegram](docs/telegram-import.md) và [tích hợp TDLib](docs/telegram-tdlib-integration.md).
 - Có thể mở liên kết `t.me`, `www.t.me` và `telegram.me` qua AI Player khi Android chuyển liên kết cho ứng dụng. Nếu thiết bị mở bằng Telegram hoặc trình duyệt theo mặc định, có thể dùng **Chia sẻ → AI Player** hoặc dán liên kết vào **Mở Telegram**.
+
+**Cài đặt → Dữ liệu và bộ nhớ → Xóa lịch sử hoạt động** cho phép xóa video gần đây cùng vị trí phát đã lưu, lịch sử liên kết Telegram hoặc cả hai. Video đã lưu, transcript, bản dịch và phiên đăng nhập Telegram vẫn được giữ.
 
 ## Transcript, bản dịch và phụ đề
 
@@ -61,11 +65,17 @@ Nếu gặp `INSTALL_FAILED_UPDATE_INCOMPATIBLE`, APK đang cài và APK mới c
 2. Chọn **Tạo transcript** và chọn track âm thanh nếu video có nhiều track. Có thể dùng **Nhập SRT/VTT** khi đã có phụ đề theo thời gian.
 3. Chọn **Dịch**. Trong **Cài đặt → Quản lý model**, có thể tải trước model nhận dạng và dịch qua Wi-Fi hoặc dữ liệu di động để dùng offline. Tiếng Anh là ngôn ngữ trung gian của ML Kit và không cần tải gói dịch riêng.
 4. Nếu bản dịch còn thiếu, chọn **Dịch lại N đoạn thiếu**. Khi cần xử lý từng đoạn, chọn **Xử lý N đoạn thiếu**, mở đoạn theo mốc thời gian, nghe lại hoặc chỉnh lời gốc và ngôn ngữ nguồn, rồi dịch đoạn đó. Các đoạn đã dịch được giữ lại.
-5. Chọn **Tắt**, **Gốc** hoặc **Bản dịch** riêng cho **Phụ đề** và **Phát âm**. Phát âm cần giọng TextToSpeech tương ứng trên thiết bị. Có thể chạm vào một đoạn trong danh sách transcript để tua đến mốc đó.
+5. Chọn nội dung **Gốc** hoặc **Dịch** riêng cho **Phụ đề** và **Phát âm**. Giọng đọc phụ thuộc vào các giọng TextToSpeech mà Android cung cấp. Vào **Cài đặt → Âm thanh → Chọn giọng đọc** để chọn ngôn ngữ, nghe thử và lưu lựa chọn. Có thể chạm vào một đoạn trong danh sách transcript để tua đến mốc đó.
+
+Để dịch phụ đề sang tiếng Việt theo ngữ cảnh trên Android ARM64, tải **Qwen3-4B Q4_K_M** (khoảng 2,5 GB) trong **Cài đặt → Quản lý model → Dịch**, rồi chọn **Dịch → Ngữ cảnh** trong trình phát. Sau khi tải model, toàn bộ quá trình dịch chạy trên thiết bị. Bản dịch được giữ ở bước xem trước cho đến khi bấm **Áp dụng**.
+
+Trong menu **⋯** của trình phát, dùng **Xuất tệp** hoặc **Chia sẻ** để lưu hay gửi transcript và bản dịch dưới dạng TXT hoặc SRT.
 
 Có thể đóng gói model nhận dạng Vosk vào APK theo [hướng dẫn model Vosk](app/src/main/assets/README-vosk-models.txt).
 
 ## Build và kiểm thử
+
+Xem [quy trình nghiệm thu tải Qwen và dịch ngữ cảnh trên Redmi](docs/model-acceptance-ja-vi.md#nghiệm-thu-qwen-trên-redmi) để đối chứng với ML Kit.
 
 Để tự build từ GitHub, tải mã nguồn bằng Git.
 
@@ -74,7 +84,7 @@ git clone https://github.com/khoalpa/ai.player.android.git
 cd ai.player.android
 ```
 
-Cần JDK 21, Android SDK 36 và thiết bị hoặc máy ảo Android 8.0 (API 26) trở lên. Trong Android Studio, chọn JDK 21 cho Gradle, mở thư mục gốc dự án, chọn `standaloneDebug` hoặc `playDebug` trong **Build Variants**, rồi chọn thiết bị và bấm **Run**.
+Cần JDK 21, Android SDK Platform 36, Build Tools 36.0.0, NDK 28.2.13676358 và CMake 3.22.1. Lần build native đầu tiên cần kết nối mạng để tải mã nguồn llama.cpp. Để chạy APK, dùng thiết bị hoặc máy ảo ARM64 chạy Android 8.0 (API 26) trở lên. Trong Android Studio, chọn JDK 21 cho Gradle, mở thư mục gốc dự án, chọn `standaloneDebug` hoặc `playDebug` trong **Build Variants**, rồi chọn thiết bị và bấm **Run**.
 
 | Biến thể | Mục đích |
 |---|---|
@@ -100,7 +110,7 @@ APK debug nằm trong `app/build/outputs/apk/<flavor>/debug/`. Trên thiết b�
 
 ### Chuẩn bị bản phát hành
 
-Hai biến thể dùng chung mã nguồn, package, phiên bản và cấu hình SDK. Chạy workflow **Android build** thủ công từ commit đã chốt để tạo cặp AAB và APK chưa ký, hoặc chạy lệnh sau trên cùng checkout:
+Hai biến thể dùng chung mã nguồn, package `com.aiplayer.android` và cấu hình SDK. Kiểm tra `versionName` và `versionCode` trong [app/build.gradle](app/build.gradle) để biết phiên bản của checkout đang build. Chạy workflow **Android build** thủ công từ commit đã chốt để tạo cặp AAB và APK chưa ký, hoặc chạy lệnh sau trên cùng checkout:
 
 ```powershell
 .\gradlew.bat :app:bundlePlayRelease :app:assembleStandaloneRelease

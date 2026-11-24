@@ -21,6 +21,13 @@ def worktree = commit.isEmpty() ? null : gitMetadata(["status", "--porcelain", "
 android {
     namespace = "com.aiplayer.android"
     compileSdk = 36
+    ndkVersion = "28.2.13676358"
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
     buildFeatures {
         buildConfig = true
     }
@@ -37,11 +44,16 @@ android {
     }
 
     defaultConfig {
+        externalNativeBuild {
+            cmake {
+                abiFilters "arm64-v8a"
+            }
+        }
         applicationId = "com.aiplayer.android"
         testInstrumentationRunner "com.aiplayer.android.VietnameseModelBenchmark"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
+        versionCode = 3
         versionName = "0.1.0"
         buildConfigField "String", "GIT_COMMIT", '"' + commit + '"'
         buildConfigField "String", "GIT_WORKTREE", worktree == null ? '"unknown"'

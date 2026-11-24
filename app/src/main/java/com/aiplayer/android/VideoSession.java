@@ -328,8 +328,8 @@ final class VideoSession {
 
     Uri videoUri() { return video; }
     String identity() { return videoIdentity; }
-    boolean isDeepLTranslationRunning() {
-        return translator != null && translator.usesDeepL();
+    boolean isContextTranslationRunning() {
+        return translator != null && translator.usesContext();
     }
 
     Task failedTask() { return failedTask; }
@@ -375,8 +375,16 @@ final class VideoSession {
         translate(target, configuredSource, null, null);
     }
 
-    void retranslate(String target, String configuredSource, boolean replace, String deepLKey) {
-        translate(target, configuredSource, null, null, replace, deepLKey);
+    void retranslate(String target, String configuredSource, boolean replace) {
+        translate(target, configuredSource, null, null, replace, null, null, null);
+    }
+
+    void translateInContext(TranscriptCue selected, String glossary, boolean replace,
+                            java.util.function.BiConsumer<List<String>, Consumer<Boolean>> preview) {
+        if (busy || cues.isEmpty() || (selected != null
+                && (!cues.contains(selected) || !"vi".equals(targetLanguage)))) return;
+        if (!models.contextual.installed() || !ContextModelStore.supported()) return;
+        translate("vi", sourceLanguage, selected, null, replace, models.contextual, glossary, preview);
     }
 
     void retryMissingTranslations(String configuredSource, Runnable onFinished) {
@@ -430,12 +438,13 @@ final class VideoSession {
     }
 
     private void translate(String target, String configuredSource, TranscriptCue selected, Runnable onFinished) {
-        translate(target, configuredSource, selected, onFinished, false, null);
+        translate(target, configuredSource, selected, onFinished, false, null, null, null);
     }
 
     private void translate(String target, String configuredSource, TranscriptCue selected,
-                           Runnable onFinished, boolean retranslate, String deepLKey) {
-        if (deepLKey == null && OfflineModels.pending(models.translation)) {
+                           Runnable onFinished, boolean retranslate, ContextModelStore contextModel,
+                           String glossary, java.util.function.BiConsumer<List<String>, Consumer<Boolean>> preview) {
+        if (contextModel == null && OfflineModels.pending(models.translation)) {
             changed.accept("Đang quản lý model dịch. Hãy đợi thao tác hoàn tất.");
             return;
         }
@@ -449,20 +458,31 @@ final class VideoSession {
 
         int translatedBefore = RecentVideoStatus.translatedCount(cues, targetLanguage, target);
         translationModelUnavailable = false;
-        boolean online = deepLKey != null;
+        boolean inContext = contextModel != null;
         TranslationBatch batch = new TranslationBatch(cues, targetLanguage, target, selected, retranslate);
         List<TranscriptCue> input = batch.input;
+        if (inContext && selected == null) {
+            if (targetLanguage != null && !target.equals(targetLanguage)
+                    && cues.stream().anyMatch(cue -> cue.translationOrigin == TranscriptCue.TranslationOrigin.MANUAL)) {
+                busy = false;
+                changed.accept("Bản dịch hiện có đoạn sửa tay thuộc ngôn ngữ khác. Hãy chọn video khác hoặc dùng ML Kit để đổi ngôn ngữ.");
+                return;
+            }
+            input.removeIf(cue -> cue.translationOrigin == TranscriptCue.TranslationOrigin.MANUAL
+                    || (target.equals(targetLanguage) && cue.translationOrigin == TranscriptCue.TranslationOrigin.ORIGINAL));
+        }
         if (input.isEmpty()) {
             busy = false;
             changed.accept("Bản dịch đã đầy đủ.");
             return;
         }
-        translator = new TranslationClient(deepLKey);
+        ContextTranslationClient contextual = contextModel == null ? null : new ContextTranslationClient(contextModel, glossary);
+        translator = new TranslationClient(contextual);
         runningTask = Task.TRANSLATION;
         translationTaskTarget = target;
         changed.accept("Đang chuẩn bị model dịch…");
         if (request != revision) return;
-        translator.translateCues(settings, input, cues, new TranslationClient.Callback() {
+        TranslationClient.Callback callback = new TranslationClient.Callback() {
             @Override
             public void onModelUnavailable() {
                 if (request == revision) translationModelUnavailable = true;
@@ -493,7 +513,7 @@ final class VideoSession {
                 runningTask = null;
                 boolean complete = target.equals(targetLanguage) && missingTranslations() == 0;
                 int translated = RecentVideoStatus.translatedCount(cues, targetLanguage, target);
-                if (!complete && (online || translated == translatedBefore)) {
+                if (!complete && (inContext || translated == translatedBefore)) {
                     failedTask = Task.TRANSLATION;
                     failedTarget = target;
                 } else if (complete || (failedTask == Task.TRANSLATION && target.equals(failedTarget))) {
@@ -507,7 +527,46 @@ final class VideoSession {
                 changed.accept(status);
                 if (onFinished != null) onFinished.run();
             }
-        });
+        };
+        if (contextual == null) {
+            translator.translateCues(settings, input, cues, callback);
+            return;
+        }
+        changed.accept("Đang phân tích ngữ cảnh toàn video.");
+        if (request != revision) return;
+        contextual.translate(cues, input, results -> main.post(() -> {
+            if (request != revision) return;
+            if (preview == null) {
+                for (int i = progressCompleted; i < results.size(); i++) callback.onTranslated(i, results.get(i));
+            }
+            callback.onProgress(results.size(), input.size(), 0, 0);
+        }))
+                .addOnSuccessListener(results -> {
+                    if (request != revision) return;
+                    if (results.size() != input.size()) {
+                        callback.onFinished(0, "Bản dịch theo ngữ cảnh chưa đủ số đoạn.");
+                        return;
+                    }
+                    if (preview == null) {
+                        for (int i = progressCompleted; i < results.size(); i++) callback.onTranslated(i, results.get(i));
+                        callback.onFinished(results.size(), "Đã lưu bản dịch theo ngữ cảnh.");
+                        contextual.clearCompleted();
+                        return;
+                    }
+                    preview.accept(results, apply -> {
+                        if (request != revision || !busy) return;
+                        contextual.clearCompleted();
+                        if (!apply) {
+                            cancel();
+                            changed.accept("Đã bỏ bản dịch theo ngữ cảnh.");
+                            return;
+                        }
+                        for (int i = 0; i < results.size(); i++) callback.onTranslated(i, results.get(i));
+                        callback.onFinished(results.size(), "Đã lưu bản dịch theo ngữ cảnh.");
+                    });
+                })
+                .addOnFailureListener(error -> callback.onFinished(0, error instanceof java.io.IOException
+                        ? error.getMessage() : "Không thể xử lý bản dịch theo ngữ cảnh."));
     }
 
     private void restorePreviousTranscript() {

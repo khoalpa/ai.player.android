@@ -8,6 +8,8 @@ AI Player đọc các video mà bạn chọn hoặc chia sẻ vào ứng dụng.
 
 Video đã lưu, bản sao lưu đệm, lịch sử mở video, vị trí phát, transcript, bản dịch và cài đặt có thể được lưu trên thiết bị để bạn tiếp tục sử dụng. Khi bạn xuất hoặc chia sẻ tệp, Android chuyển nội dung tới nơi lưu hoặc ứng dụng nhận mà bạn chọn. Khi bạn chọn phát âm, văn bản được chuyển cho công cụ đọc đã chọn trên thiết bị. Nếu bạn dùng giọng đọc qua mạng, công cụ đó có thể gửi văn bản tới dịch vụ của nhà cung cấp giọng đọc.
 
+Dịch theo ngữ cảnh video bằng Qwen xử lý transcript và thuật ngữ trên thiết bị. Ứng dụng kết nối với Hugging Face để tải tệp model khi bạn chọn tải. Tiến độ dịch được lưu trong bộ nhớ đệm cục bộ để có thể tiếp tục tác vụ.
+
 ## Kết nối mạng và dịch vụ bên thứ ba
 
 - Khi bạn mở liên kết hoặc tải video trực tuyến, AI Player kết nối với trang hoặc máy chủ lưu nội dung. Máy chủ đích có thể nhận địa chỉ IP, yêu cầu truy cập, thông tin trình duyệt và cookie phù hợp với phiên truy cập.
