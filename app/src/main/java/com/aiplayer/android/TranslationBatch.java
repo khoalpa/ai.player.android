@@ -20,10 +20,16 @@ final class TranslationBatch {
 
     TranslationBatch(List<TranscriptCue> cues, String previousTarget, String target,
                      TranscriptCue selected, boolean retranslate) {
+        this(cues, previousTarget, target, selected, retranslate, cue -> false);
+    }
+
+    TranslationBatch(List<TranscriptCue> cues, String previousTarget, String target,
+                     TranscriptCue selected, boolean retranslate,
+                     java.util.function.Predicate<TranscriptCue> needsReview) {
         all = cues;
         replacingLanguage = !target.equals(previousTarget);
         for (TranscriptCue cue : cues) {
-            if (selected == null ? retranslate || replacingLanguage || cue.translationPending || !cue.hasTranslation() : cue == selected) {
+            if (selected == null ? retranslate || replacingLanguage || cue.translationPending || !cue.hasTranslation() || needsReview.test(cue) : cue == selected) {
                 input.add(cue);
             }
         }

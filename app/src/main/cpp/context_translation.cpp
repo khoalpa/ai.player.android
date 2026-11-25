@@ -1,4 +1,5 @@
 #include <jni.h>
+#include <android/log.h>
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -18,8 +19,45 @@ jbyteArray failure(JNIEnv *env, const char *message) {
     return nullptr;
 }
 
+void initializeBackend() {
+    static const bool initialized = [] { llama_backend_init(); return true; }();
+    (void) initialized;
+}
+
+ggml_backend_dev_t vulkanDevice() {
+    initializeBackend();
+    auto *registry = ggml_backend_reg_by_name("Vulkan");
+    if (!registry) return nullptr;
+    for (size_t i = 0; i < ggml_backend_reg_dev_count(registry); ++i) {
+        auto *device = ggml_backend_reg_dev_get(registry, i);
+        const auto type = ggml_backend_dev_type(device);
+        if (type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU) return device;
+    }
+    return nullptr;
+}
+
 bool aborted(void *engine) {
     return static_cast<Engine *>(engine)->cancelled.load();
+}
+
+constexpr int context_tokens = 8192;
+
+llama_context_params contextParams(Engine *engine, int threads) {
+    auto params = llama_context_default_params();
+    params.n_ctx = context_tokens;
+    params.n_batch = 256;
+    params.n_threads = threads;
+    params.n_threads_batch = threads;
+    params.abort_callback = aborted;
+    params.abort_callback_data = engine;
+    return params;
+}
+
+std::string readPrompt(JNIEnv *env, jbyteArray prompt) {
+    std::string input(env->GetArrayLength(prompt), '\0');
+    env->GetByteArrayRegion(prompt, 0, static_cast<jsize>(input.size()),
+                            reinterpret_cast<jbyte *>(input.data()));
+    return input;
 }
 
 llama_token sampleConstrainedGreedy(llama_context *context, llama_sampler *sampler,
@@ -38,19 +76,45 @@ llama_token sampleConstrainedGreedy(llama_context *context, llama_sampler *sampl
 }
 }
 
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_aiplayer_android_ContextTranslationClient_hasVulkanDevice(JNIEnv *, jclass) {
+    try {
+        return vulkanDevice() != nullptr;
+    } catch (const std::exception &error) {
+        __android_log_print(ANDROID_LOG_WARN, "ContextTranslation", "Vulkan probe: %s", error.what());
+        return JNI_FALSE;
+    }
+}
+
 extern "C" JNIEXPORT jlong JNICALL
-Java_com_aiplayer_android_ContextTranslationClient_openModel(JNIEnv *env, jclass, jstring path) {
-    static const bool initialized = [] { llama_backend_init(); return true; }();
-    (void) initialized;
+Java_com_aiplayer_android_ContextTranslationClient_openModel(JNIEnv *env, jclass, jstring path, jboolean gpu) {
     const char *file = env->GetStringUTFChars(path, nullptr);
     if (!file) return 0;
-    auto engine = std::make_unique<Engine>();
-    auto params = llama_model_default_params();
-    params.n_gpu_layers = 0;
-    engine->model.reset(llama_model_load_from_file(file, params));
+    std::string model_path(file);
     env->ReleaseStringUTFChars(path, file);
-    if (!engine->model) return 0;
-    return reinterpret_cast<jlong>(engine.release());
+    try {
+        initializeBackend();
+        auto *device = gpu ? vulkanDevice() : nullptr;
+        if (gpu && !device) return 0;
+        ggml_backend_dev_t devices[] = {device, nullptr};
+        auto engine = std::make_unique<Engine>();
+        auto params = llama_model_default_params();
+        params.devices = devices;
+        params.n_gpu_layers = gpu ? 999 : 0;
+        engine->model.reset(llama_model_load_from_file(model_path.c_str(), params));
+        if (!engine->model) return 0;
+        if (gpu) {
+            // Check that the full context fits before reporting GPU or translating any cues.
+            std::unique_ptr<llama_context, decltype(&llama_free)> probe(
+                llama_init_from_model(engine->model.get(), contextParams(engine.get(), 1)), llama_free);
+            if (!probe) return 0;
+        }
+        __android_log_print(ANDROID_LOG_INFO, "ContextTranslation", "backend=%s", gpu ? "Vulkan" : "CPU");
+        return reinterpret_cast<jlong>(engine.release());
+    } catch (const std::exception &error) {
+        __android_log_print(ANDROID_LOG_WARN, "ContextTranslation", "Qwen initialization: %s", error.what());
+        return 0;
+    }
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -63,31 +127,32 @@ Java_com_aiplayer_android_ContextTranslationClient_freeModel(JNIEnv *, jclass, j
     delete reinterpret_cast<Engine *>(handle);
 }
 
+extern "C" JNIEXPORT jint JNICALL
+Java_com_aiplayer_android_ContextTranslationClient_countTokens(JNIEnv *env, jclass, jlong handle,
+                                                               jbyteArray prompt) {
+    auto *engine = reinterpret_cast<Engine *>(handle);
+    const auto *vocab = llama_model_get_vocab(engine->model.get());
+    const auto input = readPrompt(env, prompt);
+    if (env->ExceptionCheck()) return 0;
+    // With zero capacity llama_tokenize returns the negative required token count.
+    return -llama_tokenize(vocab, input.data(), static_cast<int>(input.size()), nullptr, 0, false, true);
+}
+
 extern "C" JNIEXPORT jbyteArray JNICALL
 Java_com_aiplayer_android_ContextTranslationClient_generateBounded(JNIEnv *env, jclass, jlong handle,
                                                             jbyteArray prompt, jstring grammar, jint threads, jint output_tokens) {
     auto *engine = reinterpret_cast<Engine *>(handle);
     const auto *vocab = llama_model_get_vocab(engine->model.get());
-    std::string input(env->GetArrayLength(prompt), '\0');
-    env->GetByteArrayRegion(prompt, 0, static_cast<jsize>(input.size()),
-                            reinterpret_cast<jbyte *>(input.data()));
+    const auto input = readPrompt(env, prompt);
     if (env->ExceptionCheck()) return nullptr;
-    constexpr int context_tokens = 8192;
     const int prompt_limit = context_tokens - output_tokens;
     std::vector<llama_token> tokens(prompt_limit);
     const int count = llama_tokenize(vocab, input.data(), static_cast<int>(input.size()),
                                     tokens.data(), prompt_limit, false, true);
     if (count < 0) return nullptr; // Java retries with a smaller group.
     if (count == 0) return failure(env, "Empty offline translation prompt.");
-    auto params = llama_context_default_params();
-    params.n_ctx = context_tokens;
-    params.n_batch = 256;
-    params.n_threads = threads;
-    params.n_threads_batch = threads;
-    params.abort_callback = aborted;
-    params.abort_callback_data = engine;
     std::unique_ptr<llama_context, decltype(&llama_free)> context(
-        llama_init_from_model(engine->model.get(), params), llama_free);
+        llama_init_from_model(engine->model.get(), contextParams(engine, threads)), llama_free);
     if (!context) return failure(env, "Could not allocate offline translation memory.");
     for (int i = 0; i < count; i += 256) {
         if (engine->cancelled.load() ||
@@ -106,7 +171,8 @@ Java_com_aiplayer_android_ContextTranslationClient_generateBounded(JNIEnv *env, 
     llama_sampler_chain_add(sampler.get(), llama_sampler_init_greedy());
     const int vocab_size = llama_vocab_n_tokens(vocab);
     std::string result;
-    for (int i = 0; i < output_tokens && !engine->cancelled.load(); ++i) {
+    int generated = 0;
+    for (; generated < output_tokens && !engine->cancelled.load(); ++generated) {
         auto token = sampleConstrainedGreedy(context.get(), sampler.get(), constraint, vocab_size);
         if (token == LLAMA_TOKEN_NULL) return failure(env, "Missing offline subtitle token.");
         if (llama_vocab_is_eog(vocab, token)) break;
@@ -119,6 +185,9 @@ Java_com_aiplayer_android_ContextTranslationClient_generateBounded(JNIEnv *env, 
         }
     }
     if (engine->cancelled.load()) return failure(env, "Offline subtitle generation was interrupted.");
+    __android_log_print(ANDROID_LOG_INFO, "ContextTranslation",
+                       "inference prompt_tokens=%d output_tokens=%d output_limit=%d",
+                       count, generated, output_tokens);
     auto bytes = env->NewByteArray(static_cast<jsize>(result.size()));
     if (bytes) env->SetByteArrayRegion(bytes, 0, static_cast<jsize>(result.size()),
                                      reinterpret_cast<const jbyte *>(result.data()));

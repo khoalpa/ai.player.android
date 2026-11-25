@@ -63,6 +63,24 @@ final class AppSettings {
         }
     }
 
+    enum QwenProcessor {
+        AUTO("Tự động"), GPU("Ưu tiên GPU"), CPU("CPU");
+
+        final String label;
+
+        QwenProcessor(String label) {
+            this.label = label;
+        }
+
+        static QwenProcessor fromPreference(String name) {
+            for (QwenProcessor processor : values()) {
+                if (processor.name().equals(name)) return processor;
+            }
+            return AUTO;
+        }
+    }
+
+    QwenProcessor qwenProcessor = QwenProcessor.AUTO;
     String sourceLanguage = "ja";
     String targetLanguage = "vi";
     int sourceVolume = DEFAULT_SOURCE_VOLUME;
@@ -96,6 +114,7 @@ final class AppSettings {
     static AppSettings load(Context context) {
         SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         AppSettings settings = new AppSettings();
+        settings.qwenProcessor = QwenProcessor.fromPreference(prefs.getString("qwenProcessor", ""));
         settings.sourceLanguage = prefs.getString(SOURCE_LANGUAGE, settings.sourceLanguage);
         settings.targetLanguage = prefs.getString(TARGET_LANGUAGE, settings.targetLanguage);
         settings.sourceVolume = prefs.getInt("sourceVolume", settings.sourceVolume);
@@ -125,6 +144,7 @@ final class AppSettings {
     void save(Context context) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .edit()
+                .putString("qwenProcessor", qwenProcessor.name())
                 .putString(SOURCE_LANGUAGE, sourceLanguage)
                 .putString(TARGET_LANGUAGE, targetLanguage)
                 .putInt("sourceVolume", sourceVolume)

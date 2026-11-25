@@ -21,7 +21,7 @@ import javax.net.ssl.HttpsURLConnection;
 
 final class ContextModelStore {
     static final String NAME = "Qwen3-4B Q4_K_M";
-    private static final String SHA256 = "7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5";
+    static final String SHA256 = "7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5";
     private static final String FILENAME = "Qwen3-4B-Q4_K_M.gguf";
     private static final String URL = "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/bc64014/" + FILENAME;
     private static final long MAX_BYTES = 2_600_000_000L;
@@ -44,12 +44,61 @@ final class ContextModelStore {
         return file.isFile();
     }
 
+    ModelExport exportModel() throws IOException {
+        if (!installed()) throw new IOException("Qwen chưa được cài.");
+        return new ModelExport(FILENAME, "application/octet-stream",
+                java.util.Collections.singletonMap(FILENAME, file));
+    }
+
     static boolean supported() {
         return android.os.Process.is64Bit() && Arrays.asList(Build.SUPPORTED_ABIS).contains("arm64-v8a");
     }
 
     private File partial() {
         return new File(file.getParentFile(), FILENAME + ".part");
+    }
+
+    void importModel(android.content.ContentResolver resolver, android.net.Uri uri,
+                     BooleanSupplier cancelled, Progress progress) throws Exception {
+        synchronized (DOWNLOAD_LOCK) {
+            File directory = file.getParentFile();
+            Files.createDirectories(directory.toPath());
+            File staging = new File(directory, FILENAME + ".import");
+            try (android.content.res.AssetFileDescriptor descriptor = resolver.openAssetFileDescriptor(uri, "r")) {
+                if (descriptor == null) throw new IOException("Không đọc được tệp Qwen.");
+                long size = descriptor.getLength();
+                if (size > MAX_BYTES) throw new IOException("Tệp Qwen vượt kích thước cho phép.");
+                if (size >= 0 && directory.getUsableSpace() + staging.length() < size) {
+                    throw new IOException("Không đủ dung lượng trống để nhập Qwen.");
+                }
+                MessageDigest hash = MessageDigest.getInstance("SHA-256");
+                long written = 0;
+                long reported = 0;
+                try (InputStream in = descriptor.createInputStream(); FileOutputStream out = new FileOutputStream(staging)) {
+                    byte[] buffer = new byte[128 * 1024];
+                    int count;
+                    while ((count = in.read(buffer)) != -1) {
+                        checkCancelled(cancelled);
+                        written += count;
+                        if (written > MAX_BYTES) throw new IOException("Tệp Qwen vượt kích thước cho phép.");
+                        out.write(buffer, 0, count);
+                        hash.update(buffer, 0, count);
+                        if (written - reported >= 4_000_000) {
+                            reported = written;
+                            progress.update(written, size);
+                        }
+                    }
+                    out.getFD().sync();
+                }
+                if (!SHA256.equals(hex(hash.digest()))) throw new IOException("SHA-256 của tệp Qwen không khớp.");
+                checkCancelled(cancelled);
+                Files.move(staging.toPath(), file.toPath(), java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                progress.update(written, written);
+            } finally {
+                Files.deleteIfExists(staging.toPath());
+            }
+        }
     }
 
     long partialBytes() {

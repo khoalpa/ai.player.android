@@ -12,6 +12,7 @@ final class TranscriptCue {
     TranslationOrigin translationOrigin = TranslationOrigin.AUTOMATIC;
     boolean translationNeedsReview;
     boolean translationPending;
+    boolean translatedDirectly;
     JSONArray wordStarts;
     boolean sentence;
     boolean sourceEdited;
@@ -47,6 +48,7 @@ final class TranscriptCue {
         translationOrigin = origin;
         translationNeedsReview = false;
         translationPending = false;
+        translatedDirectly = false;
     }
 
     void syncTranslationAfterSourceEdit() {
@@ -62,6 +64,7 @@ final class TranscriptCue {
         copy.setTranslation(targetText, translationOrigin);
         copy.translationNeedsReview = translationNeedsReview;
         copy.translationPending = translationPending;
+        copy.translatedDirectly = translatedDirectly;
         copy.wordStarts = wordStarts;
         copy.sentence = sentence;
         copy.sourceEdited = sourceEdited;

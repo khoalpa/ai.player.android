@@ -27,6 +27,12 @@
         <item name="playerButtonDanger">#42242B</item>
         <item name="playerButtonDangerInk">#FF9B9B</item>
         <item name="playerIconNeutral">#BDBDBD</item>
+        <item name="playerIconVideo">#75A3FF</item>
+        <item name="playerIconTranscript">#54D8B0</item>
+        <item name="playerIconModel">#BEA4FF</item>
+        <item name="playerIconDelete">#FF9595</item>
+        <item name="playerIconVideoOnPrimary">#092552</item>
+        <item name="playerIconTranscriptOnPrimary">#002C23</item>
         <item name="playerIconSuccess">#7CDDA0</item>
         <item name="playerIconWarning">#FFD487</item>
     </style>
@@ -50,6 +56,12 @@
         <item name="playerButtonDanger">#FDEBEE</item>
         <item name="playerButtonDangerInk">#B42A35</item>
         <item name="playerIconNeutral">#536176</item>
+        <item name="playerIconVideo">#194AAB</item>
+        <item name="playerIconTranscript">#00664F</item>
+        <item name="playerIconModel">#62429F</item>
+        <item name="playerIconDelete">#A02432</item>
+        <item name="playerIconVideoOnPrimary">#E9F1FF</item>
+        <item name="playerIconTranscriptOnPrimary">#BAFFE9</item>
         <item name="playerIconSuccess">#18703D</item>
         <item name="playerIconWarning">#865500</item>
     </style>

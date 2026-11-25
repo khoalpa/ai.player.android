@@ -81,6 +81,7 @@ final class SentenceTranscriptEdits {
                         && TranscriptSentences.sameText(cue.sourceText, sentence.sourceText)) {
                     sentence.setTranslation(cue.targetText, cue.translationOrigin);
                     sentence.translationNeedsReview = cue.translationNeedsReview;
+                    sentence.translatedDirectly = cue.translatedDirectly;
                     continue;
                 }
             }

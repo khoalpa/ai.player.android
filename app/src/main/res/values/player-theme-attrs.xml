@@ -10,4 +10,10 @@
     <attr name="playerIconNeutral" format="color" />
     <attr name="playerIconSuccess" format="color" />
     <attr name="playerIconWarning" format="color" />
+    <attr name="playerIconVideo" format="color" />
+    <attr name="playerIconTranscript" format="color" />
+    <attr name="playerIconModel" format="color" />
+    <attr name="playerIconDelete" format="color" />
+    <attr name="playerIconVideoOnPrimary" format="color" />
+    <attr name="playerIconTranscriptOnPrimary" format="color" />
 </resources>

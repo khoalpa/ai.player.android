@@ -51,13 +51,14 @@ final class TranslationClient {
     };
     private boolean closed;
     private final ContextTranslationClient contextual;
+    private final ContextModelStore directModel;
+    private ContextTranslationClient directEngine;
+    private M2mTranslation m2mEngine;
+    private M2mModelStore m2mModel;
 
-    TranslationClient() {
-        this(null);
-    }
-
-    TranslationClient(ContextTranslationClient contextual) {
+    TranslationClient(ContextTranslationClient contextual, ContextModelStore directModel) {
         this.contextual = contextual;
+        this.directModel = directModel;
         languageIdentifier = contextual == null ? LanguageIdentification.getClient() : null;
     }
 
@@ -69,6 +70,20 @@ final class TranslationClient {
         return contextual != null;
     }
 
+    String processorStatus() {
+        String label = processorLabel();
+        return label.isEmpty() ? "" : " · " + label;
+    }
+
+    String processorLabel() {
+        ContextTranslationClient qwen = contextual == null ? directEngine : contextual;
+        return qwen == null ? "" : qwen.processorLabel();
+    }
+
+    void useM2m(M2mModelStore model) {
+        m2mModel = model;
+    }
+
     void translateCues(AppSettings settings, List<TranscriptCue> cues,
             List<TranscriptCue> languageSample, Callback callback) {
         if (cues.isEmpty()) {
@@ -76,6 +91,7 @@ final class TranslationClient {
             return;
         }
 
+        AppSettings.QwenProcessor processor = settings.qwenProcessor;
         resolveSourceLanguage(settings, languageSample)
                 .addOnSuccessListener(sourceLanguage -> {
                     if (closed) {
@@ -100,10 +116,49 @@ final class TranslationClient {
                         return;
                     }
                     String languagePair = sourceLanguage + ">" + targetLanguage;
+                    if (m2mModel != null) {
+                        if (!ContextModelStore.supported() || !m2mModel.installed()) {
+                            callback.onModelUnavailable();
+                            callback.onFinished(0, "Hãy tải M2M100 INT8 trong Quản lý model trên Android ARM64.");
+                            return;
+                        }
+                        m2mEngine = new M2mTranslation(m2mModel);
+                        m2mEngine.prepare().addOnSuccessListener(ignored -> {
+                            if (closed) return;
+                            translateNext(text -> m2mEngine.translate(sourceLanguage, targetLanguage, text),
+                                    languagePair, cues, callback, new TranslationState(cues.size()));
+                        }).addOnFailureListener(error -> {
+                            if (!closed) callback.onFinished(0, "Không mở được M2M100 INT8. " + error.getMessage());
+                        });
+                        return;
+                    }
+                    if (requiresDirect(sourceLanguage, targetLanguage)) {
+                        if (!ContextModelStore.supported() || !directModel.installed()) {
+                            callback.onModelUnavailable();
+                            callback.onFinished(0, ContextModelStore.supported()
+                                    ? "Hãy tải Qwen trong Quản lý model để dịch trực tiếp " + languagePair + "."
+                                    : "Dịch trực tiếp " + languagePair + " cần Android ARM64.");
+                            return;
+                        }
+                        directEngine = new ContextTranslationClient(directModel, "", processor);
+                        directEngine.prepareDirect().addOnSuccessListener(ignored -> {
+                            if (closed) return;
+                            callback.onProgress(0, cues.size(), 0, 0);
+                            if (closed) return;
+                            translateNext(text -> directEngine.translateDirect(sourceLanguage, targetLanguage, text),
+                                    languagePair, cues, callback, new TranslationState(cues.size()));
+                        }).addOnFailureListener(error -> {
+                            if (!closed) callback.onFinished(0, "Không mở được model dịch offline Qwen.");
+                        });
+                        return;
+                    }
                     Translator translator = translatorFor(sourceLanguage, targetLanguage);
                     DownloadConditions conditions = new DownloadConditions.Builder().build();
                     translator.downloadModelIfNeeded(conditions)
-                            .addOnSuccessListener(v -> translateNext(translator::translate, languagePair, cues, callback, new TranslationState(cues.size())))
+                            .addOnSuccessListener(v -> {
+                                if (closed) return;
+                                translateNext(translator::translate, languagePair, cues, callback, new TranslationState(cues.size()));
+                            })
                             .addOnFailureListener(ex -> {
                                 if (closed) return;
                                 callback.onModelUnavailable();
@@ -118,12 +173,19 @@ final class TranslationClient {
     void close() {
         closed = true;
         if (contextual != null) contextual.close();
+        if (directEngine != null) directEngine.close();
+        if (m2mEngine != null) m2mEngine.close();
         if (languageIdentifier != null) languageIdentifier.close();
         for (Translator translator : translators.values()) {
             translator.close();
         }
         translators.clear();
         translationCache.clear();
+    }
+
+    static boolean requiresDirect(String source, String target) {
+        return source != null && !"auto".equals(source) && !source.equals(target)
+                && !"en".equals(source) && !"en".equals(target);
     }
 
     private Task<String> resolveSourceLanguage(AppSettings settings, List<TranscriptCue> cues) {

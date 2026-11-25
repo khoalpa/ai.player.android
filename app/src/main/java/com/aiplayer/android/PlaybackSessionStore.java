@@ -211,6 +211,7 @@ final class PlaybackSessionStore {
                         : "ORIGINAL".equals(origin) ? TranscriptCue.TranslationOrigin.ORIGINAL
                         : TranscriptCue.TranslationOrigin.AUTOMATIC);
                 cue.translationNeedsReview = row.optBoolean("translation_needs_review") && cue.hasTranslation();
+                        cue.translatedDirectly = row.optBoolean("translated_directly") && cue.hasTranslation();
                 cue.translationPending = row.optBoolean("translation_pending");
                 cues.add(cue);
             }
@@ -386,7 +387,8 @@ final class PlaybackSessionStore {
                 && expected.sourceText.equals(current.sourceText)
                 && java.util.Objects.equals(expected.targetText, current.targetText)
                 && expected.translationOrigin == current.translationOrigin
-                && expected.translationNeedsReview == current.translationNeedsReview;
+                && expected.translationNeedsReview == current.translationNeedsReview
+                && expected.translatedDirectly == current.translatedDirectly;
     }
 
     void checkpoint(VideoSession session) {
@@ -429,6 +431,7 @@ final class PlaybackSessionStore {
                         .put("translation_origin", cue.translationOrigin == TranscriptCue.TranslationOrigin.AUTOMATIC
                                 ? null : cue.translationOrigin.name())
                         .put("translation_pending", cue.translationPending ? Boolean.TRUE : null)
+                        .put("translated_directly", cue.translatedDirectly ? Boolean.TRUE : null)
                         .put("translation_needs_review", cue.translationNeedsReview ? Boolean.TRUE : null));
             }
             JSONObject data = new JSONObject().put("identity", state.identity).put("cues", array)

@@ -143,8 +143,7 @@ final class SavedVideosDialog {
             if (android.os.Build.VERSION.SDK_INT >= 27) {
                 image = retriever.getScaledFrameAtTime(-1, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 160, 90);
             } else {
-                image = android.media.ThumbnailUtils.createVideoThumbnail(file.getAbsolutePath(),
-                        android.provider.MediaStore.Video.Thumbnails.MICRO_KIND);
+                image = createApi26Thumbnail(file);
             }
         } catch (RuntimeException ignored) {
             // Leave unavailable metadata blank.
@@ -156,6 +155,12 @@ final class SavedVideosDialog {
             }
         }
         return new Preview(image, duration);
+    }
+
+    @SuppressWarnings("deprecation") // API 26 has no scaled frame extraction API.
+    private static Bitmap createApi26Thumbnail(File file) {
+        return android.media.ThumbnailUtils.createVideoThumbnail(file.getAbsolutePath(),
+                android.provider.MediaStore.Video.Thumbnails.MICRO_KIND);
     }
 
     static String formatPosition(long milliseconds) {
@@ -245,7 +250,7 @@ final class SavedVideosDialog {
             if (preview != null && preview.image != null) image.setImageBitmap(preview.image);
             else image.setImageResource(R.drawable.ic_control_open);
             if (preview == null || preview.image == null) {
-                image.setImageTintList(PlayerAppearance.controlIconTint(activity));
+                image.setImageTintList(PlayerAppearance.IconRole.VIDEO.tint(activity));
             } else {
                 image.setImageTintList(null);
             }

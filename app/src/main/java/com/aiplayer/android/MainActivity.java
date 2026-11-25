@@ -2,6 +2,17 @@ package com.aiplayer.android;
 
 import androidx.activity.ComponentActivity;
 import androidx.activity.OnBackPressedCallback;
+import androidx.activity.result.ActivityResult;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.core.content.IntentCompat;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
+import androidx.lifecycle.ViewModel;
+import androidx.lifecycle.ViewModelProvider;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
@@ -70,10 +81,20 @@ import androidx.media3.ui.PlayerView;
 
 @OptIn(markerClass = UnstableApi.class)
 public final class MainActivity extends ComponentActivity {
-    private static final int OPEN_VIDEO = 1;
-    private static final int OPEN_SUBTITLES = 2;
-    private static final int EXPORT_TRANSCRIPT = 3;
+    private enum DocumentRequest {
+        OPEN_VIDEO, OPEN_SUBTITLES, EXPORT_TRANSCRIPT, EXPORT_MODEL, IMPORT_M2M_MODEL, IMPORT_QWEN_MODEL, IMPORT_VOSK_MODEL
+    }
+
+    private final ActivityResultLauncher<Intent> videoPicker = documentLauncher(DocumentRequest.OPEN_VIDEO);
+    private final ActivityResultLauncher<Intent> subtitlePicker = documentLauncher(DocumentRequest.OPEN_SUBTITLES);
+    private final ActivityResultLauncher<Intent> transcriptExporter = documentLauncher(DocumentRequest.EXPORT_TRANSCRIPT);
+    private final ActivityResultLauncher<Intent> modelExporter = documentLauncher(DocumentRequest.EXPORT_MODEL);
+    private final ActivityResultLauncher<Intent> m2mPicker = documentLauncher(DocumentRequest.IMPORT_M2M_MODEL);
+    private final ActivityResultLauncher<Intent> qwenPicker = documentLauncher(DocumentRequest.IMPORT_QWEN_MODEL);
+    private final ActivityResultLauncher<Intent> voskPicker = documentLauncher(DocumentRequest.IMPORT_VOSK_MODEL);
     private String pendingTranscriptExport;
+    private String pendingVoskImport;
+    private String pendingModelExport;
     private final Handler main = new Handler(Looper.getMainLooper());
     private static final long STATUS_TIMEOUT_MS = 4_000L;
     private static final long CONTROLS_TIMEOUT_MS = 3_000L;
@@ -104,17 +125,19 @@ public final class MainActivity extends ComponentActivity {
         }
         return telegramContent;
     }
-    private RetainedDownload retainedDownload;
+    private DownloadViewModel downloadState;
 
-    private static final class RetainedDownload {
-        final VideoDownloadFlow flow;
-        final TdJsonTelegramSessionClient telegram;
+    public static final class DownloadViewModel extends ViewModel {
+        private VideoDownloadFlow detachedFlow;
+        private TdJsonTelegramSessionClient detachedTelegram;
 
-        RetainedDownload(VideoDownloadFlow flow, TdJsonTelegramSessionClient telegram) {
-            this.flow = flow;
-            this.telegram = telegram;
+        @Override
+        protected void onCleared() {
+            if (detachedFlow != null) detachedFlow.close();
+            if (detachedTelegram != null) detachedTelegram.closeTransport();
         }
     }
+
     private TelegramSessionClient telegramSession;
     private TelegramAuthorizationFlow.State lastTelegramState;
     private Uri currentVideo;
@@ -222,11 +245,14 @@ public final class MainActivity extends ComponentActivity {
     private LinearLayout chrome, actions, shortcuts, transcriptPanel;
     private View empty;
     private ProgressBar progress;
-    private TextView missingTranslationNotice;
+    private TextView missingTranslationNotice, transcriptTranslationStatus;
+    private View centerPlaybackControls, playbackControlsScrim;
+    private int selectedTranscriptRow = -1;
     private long skippedTranslationVersion = -1;
     private Button repairMissingTranslation, skipMissingTranslation;
     private Button primary, cancel, transcript, subtitlesButton, speechButton, followButton;
     private Button transcriptMissing;
+    private LinearLayout transcriptToolbar;
     private ListView cueList;
     private CueAdapter cueAdapter;
     private boolean follow = true, fullscreen;
@@ -241,9 +267,11 @@ public final class MainActivity extends ComponentActivity {
             java.util.concurrent.Executors.newSingleThreadExecutor();
     private LinearLayout modelForm;
     private ModelTab modelTab;
+    private boolean mlKitExpanded;
+    private boolean otherTranslationLanguagesExpanded;
 
     private enum ModelTab {
-        RECOGNITION, TRANSLATION
+        RECOGNITION, TRANSLATION, VOICE
     }
     private boolean modelSessionBusy;
     private boolean settingsDetail;
@@ -280,6 +308,8 @@ public final class MainActivity extends ComponentActivity {
             }
         });
         if (state != null) pendingTranscriptExport = state.getString("pendingTranscriptExport");
+        if (state != null) pendingVoskImport = state.getString("pendingVoskImport");
+        if (state != null) pendingModelExport = state.getString("pendingModelExport");
         orientation = getResources().getConfiguration().orientation;
         sessionStore = new PlaybackSessionStore(this);
         work = VideoWork.obtain(this);
@@ -288,8 +318,10 @@ public final class MainActivity extends ComponentActivity {
                 .setEnableDecoderFallback(true);
         player = new ExoPlayer.Builder(this, renderers).build();
         videoStore = new SavedVideoStore(this);
-        RetainedDownload previous = (RetainedDownload) getLastCustomNonConfigurationInstance();
-        videoDownloads = previous == null ? new VideoDownloadFlow(this, videoStore) : previous.flow;
+        downloadState = new ViewModelProvider(this).get(DownloadViewModel.class);
+        videoDownloads = downloadState.detachedFlow == null
+                ? new VideoDownloadFlow(this, videoStore) : downloadState.detachedFlow;
+        downloadState.detachedFlow = null;
         videoDownloads.attach(this, settings, () -> telegramSession,
                 this::showTelegramAccount, this::openTelegramPost, this::openSavedVideo, this::onVideoDownloadChanged);
         savedVideosDialog = new SavedVideosDialog(this, videoStore, sessionStore, settings);
@@ -357,7 +389,9 @@ public final class MainActivity extends ComponentActivity {
             openVideo(retained.uri, retained, false, 0);
             updateControls(work.status());
         } else updateResumeVideo();
-        if (previous != null && previous.telegram != null) startTelegramSession(previous.telegram, true);
+        TdJsonTelegramSessionClient retainedTelegram = downloadState.detachedTelegram;
+        downloadState.detachedTelegram = null;
+        if (retainedTelegram != null) startTelegramSession(retainedTelegram, true);
         else restoreTelegramSession();
         Bundle telegramState = state == null ? null : state.getBundle("telegramContent");
         if (telegramState != null) {
@@ -399,9 +433,7 @@ public final class MainActivity extends ComponentActivity {
         }
         if (intent == null || !Intent.ACTION_SEND.equals(intent.getAction())
                 || intent.getType() == null || !intent.getType().startsWith("video/")) return;
-        Uri media = android.os.Build.VERSION.SDK_INT >= 33
-                ? intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri.class)
-                : intent.getParcelableExtra(Intent.EXTRA_STREAM);
+        Uri media = IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri.class);
         if (media == null && intent.getClipData() != null && intent.getClipData().getItemCount() > 0)
             media = intent.getClipData().getItemAt(0).getUri();
         if (media == null) return;
@@ -430,11 +462,7 @@ public final class MainActivity extends ComponentActivity {
         LinearLayout root = column();
         root.setBackgroundColor(PlayerAppearance.color(this, android.R.attr.colorBackground));
         if (android.os.Build.VERSION.SDK_INT >= 29) root.setForceDarkAllowed(false);
-        root.setOnApplyWindowInsetsListener((view, insets) -> {
-            view.setPadding(insets.getSystemWindowInsetLeft(), insets.getSystemWindowInsetTop(),
-                    insets.getSystemWindowInsetRight(), insets.getSystemWindowInsetBottom());
-            return insets;
-        });
+        ViewCompat.setOnApplyWindowInsetsListener(root, MainActivity::applySystemInsets);
         chrome = row(root);
         int controlInset = dp(PlayerAppearance.HORIZONTAL_INSET_DP - PlayerAppearance.CONTROL_GAP_DP / 2);
         chrome.setPaddingRelative(controlInset, 0, controlInset, 0);
@@ -475,7 +503,7 @@ public final class MainActivity extends ComponentActivity {
                     return true;
                 });
                 popup.getMenu().add("Nhập phụ đề (SRT/VTT)").setEnabled(!session.busy)
-                        .setOnMenuItemClickListener(item -> { pick(OPEN_SUBTITLES, "*/*"); return true; });
+                        .setOnMenuItemClickListener(item -> { pick(subtitlePicker, "*/*"); return true; });
                 popup.getMenu().add("Đổi ngôn ngữ dịch")
                         .setEnabled(session.targetLanguage != null && !session.busy)
                         .setOnMenuItemClickListener(item -> { chooseTranslationLanguage(); return true; });
@@ -514,7 +542,9 @@ public final class MainActivity extends ComponentActivity {
 
         if (home != null) home.close();
         home = new PlayerHomeView(this, settings, this::showVideoSources,
-                () -> telegramContent().input(), this::resumeRecentVideo, this::removeRecentHistory);
+                () -> telegramContent().input(), this::resumeRecentVideo, this::removeRecentHistory,
+                session::lastQwenRun);
+        home.setPerformanceSamplingAllowed(started);
         empty = home;
         surface.addView(empty, new FrameLayout.LayoutParams(-1, -1));
 
@@ -527,6 +557,11 @@ public final class MainActivity extends ComponentActivity {
         minimalRotateButton = addRotateButton(view, androidx.media3.ui.R.id.exo_minimal_fullscreen);
         View controller = view.findViewById(androidx.media3.ui.R.id.exo_controller);
         if (controller != null) styleMediaControls(controller);
+        centerPlaybackControls = view.findViewById(androidx.media3.ui.R.id.exo_center_controls);
+        playbackControlsScrim = view.findViewById(androidx.media3.ui.R.id.exo_controls_background);
+        view.setOnClickListener(tapped -> {
+            if (keepsPlaybackBarVisible()) showPlaybackControls();
+        });
         if (controller instanceof PlayerControlView) {
             ((PlayerControlView) controller).setAnimationEnabled(false);
         }
@@ -547,6 +582,7 @@ public final class MainActivity extends ComponentActivity {
         view.setControllerVisibilityListener((PlayerView.ControllerVisibilityListener) visibility -> {
             positionSubtitle.run();
             if (view == playerView && shortcuts != null) {
+                if (visibility == View.VISIBLE) setCenterControlsVisible(true);
                 updateChromeVisibility();
                 scheduleControlHide();
             }
@@ -559,7 +595,11 @@ public final class MainActivity extends ComponentActivity {
         feedback = row(playbackFooter);
         feedback.setGravity(Gravity.CENTER_VERTICAL);
         progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        feedback.addView(progress, new LinearLayout.LayoutParams(dp(64), dp(24)));
+        LinearLayout.LayoutParams progressParams = new LinearLayout.LayoutParams(dp(64), dp(24));
+        int progressMargin = dp(PlayerAppearance.CONTROL_GAP_DP / 2);
+        progressParams.setMarginStart(progressMargin);
+        progressParams.setMarginEnd(progressMargin);
+        feedback.addView(progress, progressParams);
         status = new TextView(this);
         status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         status.setTextSize(settings.textSize(12));
@@ -582,6 +622,8 @@ public final class MainActivity extends ComponentActivity {
         cancel = compactButton(feedback, "Hủy", () -> {
             work.cancelWork("Đã hủy tác vụ.");
         });
+        cancel.setMinWidth(dp(48));
+        cancel.setMinimumWidth(dp(48));
         actions = column();
         playbackFooter.addView(actions, new LinearLayout.LayoutParams(-1, -2));
         missingTranslationNotice = new TextView(this);
@@ -594,7 +636,7 @@ public final class MainActivity extends ComponentActivity {
         LinearLayout actionButtons = row(actions);
         primary = button(actionButtons, "Tạo transcript theo câu", this::primaryAction);
         stylePrimaryButton(primary);
-        repairMissingTranslation = button(actionButtons, "Xử lý", this::retryMissingTranslations);
+        repairMissingTranslation = button(actionButtons, "Dịch tiếp", this::retryMissingTranslations);
         skipMissingTranslation = button(actionButtons, "Bỏ qua", () -> {
             skippedTranslationVersion = session.transcriptVersion();
             showStatus("");
@@ -688,7 +730,7 @@ public final class MainActivity extends ComponentActivity {
         shortcuts.setLayoutParams(new LinearLayout.LayoutParams(compactFooter ? 0 : -1, -2, compactFooter ? 2 : 0));
         status.setSingleLine(landscape);
         status.setEllipsize(landscape ? TextUtils.TruncateAt.END : null);
-        playerView.setControllerHideOnTouch(landscape || fullscreen);
+        playerView.setControllerHideOnTouch((landscape || fullscreen) && !transcriptPanel.isShown());
         String description = landscape ? "Xoay dọc" : "Xoay ngang";
         rotateButton.setContentDescription(description);
         rotateButton.setTooltipText(description);
@@ -773,6 +815,12 @@ public final class MainActivity extends ComponentActivity {
         return button;
     }
 
+    private Button settingsActionButton(LinearLayout form, CharSequence label, Runnable action) {
+        Button button = compactButton(form, label, action);
+        button.setGravity(Gravity.CENTER);
+        return button;
+    }
+
     private Button iconButton(LinearLayout row, int icon, String description, boolean weighted, Runnable action) {
         Button button = new Button(this);
         // Keep a 48dp icon touch target for accessibility in compact mode.
@@ -792,7 +840,7 @@ public final class MainActivity extends ComponentActivity {
         } else {
             // Center the icon without reserving space for an empty line of text.
             android.graphics.drawable.Drawable drawable = getDrawable(icon).mutate();
-            drawable.setTintList(PlayerAppearance.controlIconTint(this));
+            drawable.setTintList(PlayerAppearance.iconRole(icon).tint(this));
             button.setForeground(drawable);
             button.setForegroundGravity(Gravity.CENTER);
         }
@@ -811,7 +859,7 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private void setLeadingIcon(Button button, int icon) {
-        button.setCompoundDrawablesRelativeWithIntrinsicBounds(icon, 0, 0, 0);
+        PlayerAppearance.setLeadingIcon(button, icon, PlayerAppearance.iconRole(icon).tint(this), 0);
         button.setCompoundDrawablePadding(dp(8));
     }
 
@@ -822,6 +870,9 @@ public final class MainActivity extends ComponentActivity {
 
     private void updateModeIcon(Button button, int icon, String label, CueTimeline.Mode mode) {
         setControlIcon(button, icon, settings.textSize(20));
+        PlayerAppearance.IconRole role = icon == R.drawable.ic_control_captions && mode != CueTimeline.Mode.OFF
+                ? PlayerAppearance.IconRole.TRANSCRIPT : PlayerAppearance.IconRole.NEUTRAL;
+        button.setCompoundDrawableTintList(role.tint(this));
         button.setSelected(button.isEnabled() && mode != CueTimeline.Mode.OFF);
         button.setText(label + " · " + MODES.get(button.isEnabled() ? mode.ordinal() : 0));
         describeControl(button, label + ": " + (button.isEnabled() ? MODES.get(mode.ordinal())
@@ -831,11 +882,15 @@ public final class MainActivity extends ComponentActivity {
     private void setControlIcon(Button button, int icon, int size) {
         android.graphics.drawable.Drawable drawable = button.getContext().getDrawable(icon).mutate();
         drawable.setBounds(0, 0, dp(size), dp(size));
+        button.setCompoundDrawableTintList(PlayerAppearance.iconRole(icon).tint(this));
         button.setCompoundDrawablesRelative(null, drawable, null, null);
     }
 
     private void setTranscriptVisible(boolean visible) {
         transcriptPanel.setVisibility(visible ? View.VISIBLE : View.GONE);
+        playerView.setControllerHideOnTouch(!visible && (fullscreen || orientation == Configuration.ORIENTATION_LANDSCAPE));
+        updateTranslationNoticeVisibility();
+        if (visible) showPlaybackControls();
         fitPortraitVideo();
         transcript.setSelected(visible);
         describeControl(transcript, visible ? "Đóng transcript" : "Mở transcript");
@@ -1412,14 +1467,14 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private void openPicker() {
-        pick(OPEN_VIDEO, "video/*");
+        pick(videoPicker, "video/*");
     }
 
     private void setFullscreen(boolean enabled) {
         fullscreen = enabled;
         playerView.setFullscreenButtonState(enabled);
         fitPortraitVideo();
-        playerView.setControllerHideOnTouch(enabled || orientation == Configuration.ORIENTATION_LANDSCAPE);
+        playerView.setControllerHideOnTouch(!keepsPlaybackBarVisible());
         applySystemBars();
         updateControls(null);
         showPlaybackControls();
@@ -1512,29 +1567,135 @@ public final class MainActivity extends ComponentActivity {
                 .show();
     }
 
-    private void pick(int request, String type) {
+    private ActivityResultLauncher<Intent> documentLauncher(DocumentRequest request) {
+        return getActivityResultRegistry().register("document:" + request.name(), this,
+                new ActivityResultContracts.StartActivityForResult(),
+                result -> onDocumentResult(request, result));
+    }
+
+    private void pick(ActivityResultLauncher<Intent> launcher, String type) {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT)
                 .addCategory(Intent.CATEGORY_OPENABLE).setType(type);
-        startActivityForResult(intent, request);
+        launcher.launch(intent);
+    }
+
+    private ModelExport modelExport(String model) throws java.io.IOException {
+        if ("qwen".equals(model)) return work.models.contextual.exportModel();
+        if ("m2m100".equals(model)) return work.models.m2m.exportModel();
+        return work.models.vosk.exportModel(model);
+    }
+
+    private void pickModelExport(String model) {
+        if (session.busy || work.models.pending()) return;
+        try {
+            ModelExport export = modelExport(model);
+            pendingModelExport = model;
+            modelExporter.launch(new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
+                    .setType(export.mimeType).putExtra(Intent.EXTRA_TITLE, export.name));
+        } catch (java.io.IOException | android.content.ActivityNotFoundException error) {
+            pendingModelExport = null;
+            storageMessage("Không mở được màn hình xuất model.");
+        }
+    }
+
+    private void writeModelExport(String model, Uri destination) {
+        java.util.concurrent.atomic.AtomicBoolean cancelled = new java.util.concurrent.atomic.AtomicBoolean();
+        AlertDialog progress = new PlayerAppearance.DialogBuilder(this, settings)
+                .setTitle("Xuất model").setMessage("Đang chuẩn bị tệp…")
+                .setCancelable(false).setNegativeButton("Dừng", null).create();
+        showSheet(progress);
+        Button stop = progress.getButton(AlertDialog.BUTTON_NEGATIVE);
+        stop.setOnClickListener(view -> {
+            cancelled.set(true);
+            stop.setEnabled(false);
+            progress.setMessage("Đang dừng xuất model…");
+        });
+        storageIo.execute(() -> {
+            String message;
+            try {
+                if (session.busy || work.models.pending()) throw new java.io.IOException("Model đang được sử dụng.");
+                ModelExport export = modelExport(model);
+                long total = export.bytes();
+                try (java.io.OutputStream output = getContentResolver().openOutputStream(destination, "wt")) {
+                    if (output == null) throw new java.io.IOException("Không mở được tệp đích.");
+                    export.write(output, cancelled::get, written -> main.post(() -> {
+                        if (progress.isShowing() && !cancelled.get()) {
+                            progress.setMessage(storageSize(written) + " / " + storageSize(total));
+                        }
+                    }));
+                }
+                if (cancelled.get()) throw new java.io.InterruptedIOException();
+                message = "Đã xuất " + export.name + ".";
+            } catch (java.io.IOException | RuntimeException error) {
+                try {
+                    android.provider.DocumentsContract.deleteDocument(getContentResolver(), destination);
+                } catch (Exception ignored) {
+                    // Some document providers do not support deleting an incomplete export.
+                }
+                message = cancelled.get() ? "Đã dừng xuất model." : "Không xuất được model.";
+            }
+            String result = message;
+            main.post(() -> {
+                if (destroyed) return;
+                progress.dismiss();
+                storageMessage(result);
+            });
+        });
     }
 
     @Override
     protected void onSaveInstanceState(Bundle state) {
         super.onSaveInstanceState(state);
         state.putString("pendingTranscriptExport", pendingTranscriptExport);
+        state.putString("pendingVoskImport", pendingVoskImport);
+        state.putString("pendingModelExport", pendingModelExport);
         if (telegramContent != null) state.putBundle("telegramContent", telegramContent.saveState());
     }
 
-    @Override
-    protected void onActivityResult(int request, int result, Intent data) {
-        super.onActivityResult(request, result, data);
-        if (request == EXPORT_TRANSCRIPT) {
+    private void onDocumentResult(DocumentRequest request, ActivityResult activityResult) {
+        int result = activityResult.getResultCode();
+        Intent data = activityResult.getData();
+        if (request == DocumentRequest.EXPORT_MODEL) {
+            String model = pendingModelExport;
+            pendingModelExport = null;
+            if (model != null && result == RESULT_OK && data != null && data.getData() != null) {
+                writeModelExport(model, data.getData());
+            }
+            return;
+        }
+        if (request == DocumentRequest.IMPORT_QWEN_MODEL || request == DocumentRequest.IMPORT_VOSK_MODEL) {
+            String language = pendingVoskImport;
+            pendingVoskImport = null;
+            if (result != RESULT_OK || data == null || data.getData() == null || session.busy) return;
+            if (request == DocumentRequest.IMPORT_QWEN_MODEL) {
+                work.models.importContextModel(getContentResolver(), data.getData());
+            } else if (language != null) {
+                work.models.importVoskModel(language, getContentResolver(), data.getData());
+            }
+            return;
+        }
+        if (request == DocumentRequest.IMPORT_M2M_MODEL) {
+            if (result != RESULT_OK || data == null || session.busy) return;
+            List<Uri> files = new ArrayList<>();
+            android.content.ClipData clip = data.getClipData();
+            if (clip != null) {
+                for (int i = 0; i < clip.getItemCount(); i++) {
+                    Uri uri = clip.getItemAt(i).getUri();
+                    if (uri != null) files.add(uri);
+                }
+            } else if (data.getData() != null) {
+                files.add(data.getData());
+            }
+            work.models.importM2mFiles(getContentResolver(), files);
+            return;
+        }
+        if (request == DocumentRequest.EXPORT_TRANSCRIPT) {
             finishTranscriptExport(result == RESULT_OK && data != null ? data.getData() : null);
             return;
         }
         if (result != RESULT_OK || data == null || data.getData() == null) return;
         Uri uri = data.getData();
-        if (request == OPEN_VIDEO) {
+        if (request == DocumentRequest.OPEN_VIDEO) {
             int requestId = ++openRequest;
             player.pause();
             savePlaybackSession();
@@ -1543,7 +1704,7 @@ public final class MainActivity extends ComponentActivity {
                 savePlaybackSession();
                 openVideo(uri, restored, true, data.getFlags());
             });
-        } else if (request == OPEN_SUBTITLES && hasVideo) {
+        } else if (request == DocumentRequest.OPEN_SUBTITLES && hasVideo) {
             LinearLayout form = form();
             List<String> codes = targetLanguages();
             Spinner source = languages(form, "Ngôn ngữ phụ đề", codes, settings.sourceLanguage);
@@ -1581,6 +1742,8 @@ public final class MainActivity extends ComponentActivity {
         speech.stop();
         hasVideo = true;
         savedTranscriptVersion = -1;
+        activeRow = -1;
+        selectedTranscriptRow = -1;
         setTranscriptVisible(false);
         currentVideo = uri;
         currentVideoIdentity = restored == null ? null : restored.identity;
@@ -1746,9 +1909,10 @@ public final class MainActivity extends ComponentActivity {
         List<TranscriptCue> missing = new ArrayList<>();
         List<String> labels = new ArrayList<>();
         for (TranscriptCue cue : session.cues) {
-            if (cue.hasTranslation()) continue;
+            if (!session.needsTranslation(cue)) continue;
             missing.add(cue);
-            labels.add(TranscriptParser.formatTime(cue.startMs) + " · Chưa dịch\n" + cue.sourceText);
+            labels.add(TranscriptParser.formatTime(cue.startMs) + (cue.hasTranslation() ? " · Cần kiểm tra\n" : " · Chưa dịch\n")
+                    + cue.sourceText);
         }
         if (session.failedTask() == VideoSession.Task.TRANSLATION
                 && (missing.isEmpty() || !java.util.Objects.equals(session.targetLanguage, session.retryTranslationTarget()))) {
@@ -1763,7 +1927,7 @@ public final class MainActivity extends ComponentActivity {
             return;
         }
         AlertDialog.Builder dialog = new AlertDialog.Builder(this)
-                .setTitle("Còn " + missing.size() + " câu chưa được dịch")
+                .setTitle("Còn " + missing.size() + " câu cần xử lý")
                 .setItems(labels.toArray(new String[0]), (window, index) -> editCueTranslation(missing.get(index)))
                 .setNegativeButton("Để sau", null)
                 .setPositiveButton("Dịch tiếp", (window, which) -> showTranslationOptions(null, null, true));
@@ -1801,9 +1965,25 @@ public final class MainActivity extends ComponentActivity {
         });
         Button translate = button(sourceActions, action, () -> {
             if (!session.canEditTranslation(cue)) return;
+            String sourceCode = codes.get(source.getSelectedItemPosition());
+            boolean useM2m = getPreferences(MODE_PRIVATE).getBoolean("sentence_engine_m2m", false);
+            if (useM2m && (!work.models.m2m.installed() || work.models.m2mDownloading)) {
+                if (ContextModelStore.supported() && !work.models.m2mDownloading) work.models.toggleM2mDownload();
+                original.setError(ContextModelStore.supported()
+                        ? "Hãy đợi tải xong M2M100 rồi bấm dịch lại."
+                        : "M2M100 cần Android ARM64.");
+                return;
+            }
+            if (!useM2m && TranslationClient.requiresDirect(sourceCode, session.targetLanguage)
+                    && (!work.models.contextual.installed() || work.models.contextPending())) {
+                if (ContextModelStore.supported()) work.models.downloadContextModel();
+                original.setError(ContextModelStore.supported()
+                        ? "Hãy đợi tải xong Qwen rồi bấm dịch lại."
+                        : "Dịch trực tiếp cần Android ARM64.");
+                return;
+            }
             dialog.dismiss();
-            session.repairTranslation(cue, original.getText().toString().trim(),
-                    codes.get(source.getSelectedItemPosition()));
+            session.repairTranslation(cue, original.getText().toString().trim(), sourceCode, useM2m);
         });
         LinearLayout saveActions = row(form);
         if ("vi".equals(session.targetLanguage)) {
@@ -1865,7 +2045,11 @@ public final class MainActivity extends ComponentActivity {
         LinearLayout sentenceFields = column();
         form.addView(sentenceFields);
         List<String> codes = targetLanguages();
-        processingLabel(sentenceFields, "ML Kit offline");
+        TextView sentenceModelStatus = processingLabel(sentenceFields, "");
+        processingLabel(sentenceFields, "Dịch từng câu sang ngôn ngữ bạn chọn.");
+        Spinner sentenceEngine = selection(sentenceFields, "Model dịch",
+                Arrays.asList("Tự động", M2mModelStore.NAME),
+                getPreferences(MODE_PRIVATE).getBoolean("sentence_engine_m2m", false) ? 1 : 0);
         Spinner target = languages(sentenceFields, "Ngôn ngữ đích", codes, settings.targetLanguage);
         if (retry) {
             target.setSelection(codes.indexOf(retryTarget));
@@ -1881,24 +2065,27 @@ public final class MainActivity extends ComponentActivity {
         boolean supported = ContextModelStore.supported();
         LinearLayout context = column();
         form.addView(context);
+        processingLabel(context, "Dùng ngữ cảnh cả video để thống nhất xưng hô, tên riêng và thuật ngữ.");
         TextView modelStatus = processingLabel(context, "");
         modelStatus.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         LinearLayout contextFields = column();
         context.addView(contextFields);
-        processingLabel(contextFields, "ML Kit hiển thị sớm câu còn thiếu. Qwen hiệu đính tiếng Việt theo ngữ cảnh ngay trên thiết bị.");
+        processingLabel(contextFields, "Dùng lại bản dịch theo câu và hiệu đính những câu cần ngữ cảnh. Giữ các câu đã sửa tay.");
 
-        addLabel(contextFields, "Tên riêng, thuật ngữ và xưng hô ưu tiên");
+        LinearLayout glossaryFields = guideSection(contextFields, "Tên riêng, thuật ngữ và xưng hô ưu tiên",
+                "Nhập mỗi dòng một mục.", false);
         EditText glossary = new EditText(this);
         glossary.setHint("Ví dụ mỗi dòng một mục: John = John, Mai gọi John là anh");
         glossary.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(4000)});
         glossary.setText(session.translationGlossary());
-        contextFields.addView(glossary);
+        glossaryFields.addView(glossary);
         android.widget.CheckBox replace = new android.widget.CheckBox(this);
         if (!retry && selected == null && session.targetLanguage != null) {
             if (!"vi".equals(session.targetLanguage)) {
                 replace.setText("Thay bản dịch ngôn ngữ hiện tại bằng tiếng Việt");
             } else {
-                replace.setText("Dịch lại các câu tự động và giữ câu đã sửa tay");
+                replace.setText("Rà soát bản dịch tự động đã có");
+                replace.setChecked(!session.contextualTranslation());
             }
             contextFields.addView(replace);
         }
@@ -1921,6 +2108,16 @@ public final class MainActivity extends ComponentActivity {
         Runnable refresh = () -> {
             boolean useContext = contextual[0];
             boolean installed = supported && models.contextual.installed() && !models.contextPending();
+            String sentenceTarget = codes.get(Math.max(0, target.getSelectedItemPosition()));
+            boolean direct = TranslationClient.requiresDirect(session.sourceLanguage, sentenceTarget);
+            boolean useM2m = !useContext && sentenceEngine.getSelectedItemPosition() == 1;
+            boolean needsQwen = useContext || (direct && !useM2m);
+            sentenceModelStatus.setText(useM2m
+                    ? (supported ? models.m2mStatus() : "M2M100 cần Android ARM64.")
+                    : direct
+                    ? (supported ? "Dịch trực tiếp · " + contextDownloadStatus(models)
+                            : "Dịch trực tiếp cần Android ARM64.")
+                    : "Dịch offline · Chọn model theo cặp ngôn ngữ");
             if (bySentence != null) {
                 bySentence.setSelected(!useContext);
                 byContext.setSelected(useContext);
@@ -1930,36 +2127,58 @@ public final class MainActivity extends ComponentActivity {
             contextFields.setVisibility(installed ? View.VISIBLE : View.GONE);
             if (useContext) {
                 String message = supported ? contextDownloadStatus(models) : "Qwen yêu cầu Android ARM64.";
-                if (!installed && selected == null) message += "\nBạn có thể dùng chế độ Theo câu.";
                 modelStatus.setVisibility(installed ? View.GONE : View.VISIBLE);
                 if (!message.contentEquals(modelStatus.getText())) modelStatus.setText(message);
             }
-            submit.setText(useContext && !installed ? contextDownloadAction(models) : "Dịch");
-            submit.setEnabled(useContext && models.contextPending()
-                    ? !models.contextCancelling() : !session.busy && (!useContext || supported));
+            submit.setText(useM2m && models.m2mDownloading ? "Dừng"
+                    : useM2m && !models.m2m.installed() ? "Tải M2M100"
+                    : needsQwen && !installed ? contextDownloadAction(models) : "Dịch");
+            submit.setEnabled(needsQwen && models.contextPending()
+                    ? !models.contextCancelling() : !session.busy && (!(needsQwen || useM2m) || supported));
         };
+        AdapterView.OnItemSelectedListener refreshSelection = new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                refresh.run();
+            }
+
+            @Override public void onNothingSelected(AdapterView<?> parent) {}
+        };
+        target.setOnItemSelectedListener(refreshSelection);
+        sentenceEngine.setOnItemSelectedListener(refreshSelection);
         translationModelFeedback = refresh;
         dialog.setOnDismissListener(window -> {
             if (translationModelFeedback == refresh) translationModelFeedback = null;
         });
         refresh.run();
         submit.setOnClickListener(view -> {
-            if (contextual[0] && models.contextPending()) {
+            boolean useM2m = !contextual[0] && sentenceEngine.getSelectedItemPosition() == 1;
+            boolean needsQwen = contextual[0] || (!useM2m && TranslationClient.requiresDirect(
+                    session.sourceLanguage, codes.get(Math.max(0, target.getSelectedItemPosition()))));
+            if (needsQwen && models.contextPending()) {
                 models.cancelContextDownload();
                 return;
             }
             if (session.busy || session.cues.isEmpty() || !java.util.Objects.equals(video, currentVideo)
                     || (selected != null && !session.cues.contains(selected))) return;
+            if (useM2m && (models.m2mDownloading || !models.m2m.installed())) {
+                models.toggleM2mDownload();
+                return;
+            }
+            if (needsQwen && !models.contextual.installed()) {
+                models.downloadContextModel();
+                return;
+            }
             if (!contextual[0]) {
+                getPreferences(MODE_PRIVATE).edit().putBoolean("sentence_engine_m2m", useM2m).apply();
                 settings.targetLanguage = retry ? retryTarget : codes.get(target.getSelectedItemPosition());
                 settings.save(this);
                 dialog.dismiss();
                 showCueTranscript();
-                session.retranslate(settings.targetLanguage, session.sourceLanguage, replaceSentences.isChecked());
-                return;
-            }
-            if (!models.contextual.installed()) {
-                models.downloadContextModel();
+                if (useM2m) {
+                    session.translateWithM2m(settings.targetLanguage, session.sourceLanguage, replaceSentences.isChecked());
+                } else {
+                    session.retranslate(settings.targetLanguage, session.sourceLanguage, replaceSentences.isChecked());
+                }
                 return;
             }
             if (!retry && selected == null && session.targetLanguage != null && !"vi".equals(session.targetLanguage)
@@ -2020,37 +2239,74 @@ public final class MainActivity extends ComponentActivity {
                         ? session.sourceLanguage : settings.sourceLanguage);
         LinearLayout modelOptions = column();
         form.addView(modelOptions);
-        processingLabel(modelOptions, "Model cho lượt mới");
-        Spinner model = selection(modelOptions, "Model cho lượt mới",
-                java.util.Arrays.asList("Vosk Small (mặc định)", "Vosk Large"), 0);
-        Runnable updateModels = () -> modelOptions.setVisibility(
-                VoskModelStore.largeModelKey(SOURCE_LANGUAGES.get(language.getSelectedItemPosition())) != null
-                        ? View.VISIBLE : View.GONE);
-        language.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                updateModels.run();
-            }
-            @Override public void onNothingSelected(AdapterView<?> parent) {
-                modelOptions.setVisibility(View.GONE);
-            }
-        });
-        updateModels.run();
+        List<String> modelKeys = new ArrayList<>();
         if (!session.cues.isEmpty()) {
             processingLabel(form, transcriptOriginLabel());
             processingLabel(form, "Nhận dạng lại sẽ thay thế transcript và bản dịch hiện tại.");
         }
         String action = session.cues.isEmpty() ? "Tạo transcript theo câu" : "Nhận dạng lại";
-        showSheet(sheet(action, form).setNegativeButton("Hủy", null)
-                .setPositiveButton(action, (dialog, which) -> {
-                    String selected = SOURCE_LANGUAGES.get(language.getSelectedItemPosition());
-                    if (!videoOnly) {
-                        settings.sourceLanguage = selected;
-                        settings.save(this);
-                    }
-                    String large = VoskModelStore.largeModelKey(selected);
-                    String recognitionModel = large != null && model.getSelectedItemPosition() == 1 ? large : selected;
-                    session.generate(tracks.get(track.getSelectedItemPosition()), selected, recognitionModel);
-                }));
+        AlertDialog dialog = sheet(action, form).setNegativeButton("Hủy", null)
+                .setPositiveButton(action, null).create();
+        showSheet(dialog);
+
+        Button generate = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+        VoskModelStore vosk = work.models.vosk;
+        Runnable updateModels = () -> {
+            String selected = SOURCE_LANGUAGES.get(language.getSelectedItemPosition());
+            String large = VoskModelStore.largeModelKey(selected);
+            modelKeys.clear();
+            modelOptions.removeAllViews();
+            if (large != null && (vosk.isDownloaded(large) || vosk.isBundled(large))) {
+                modelKeys.add(large);
+            }
+            if (vosk.isDownloaded(selected) || vosk.isBundled(selected)) {
+                modelKeys.add(selected);
+            }
+            generate.setEnabled(!modelKeys.isEmpty());
+            if (modelKeys.isEmpty()) {
+                processingLabel(modelOptions, "Chưa cài model nhận dạng cho ngôn ngữ này.");
+                compactButton(modelOptions, "Quản lý model", () -> {
+                    dialog.dismiss();
+                    showModels(ModelTab.RECOGNITION, () -> chooseTrack(videoOnly));
+                });
+                return;
+            }
+            List<String> modelLabels = new ArrayList<>();
+            for (String key : modelKeys) {
+                modelLabels.add(key.equals(large) ? "Vosk Large" : "Vosk Small");
+            }
+            modelLabels.set(0, modelLabels.get(0) + " (mặc định)");
+            Spinner model = selection(modelOptions, "Model cho lượt mới", modelLabels, 0);
+            if (large != null && !modelKeys.contains(large)) {
+                processingLabel(modelOptions, "Vosk Large chưa cài");
+            }
+            generate.setOnClickListener(view -> {
+                int modelPosition = model.getSelectedItemPosition();
+                if (modelPosition < 0) return;
+                String recognitionModel = modelKeys.get(modelPosition);
+                if (!vosk.isDownloaded(recognitionModel) && !vosk.isBundled(recognitionModel)) {
+                    dialog.dismiss();
+                    chooseTrack(videoOnly);
+                    return;
+                }
+                if (!videoOnly) {
+                    settings.sourceLanguage = selected;
+                    settings.save(this);
+                }
+                dialog.dismiss();
+                session.generate(tracks.get(track.getSelectedItemPosition()), selected, recognitionModel);
+            });
+        };
+        language.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                updateModels.run();
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent) {
+                modelOptions.removeAllViews();
+                generate.setEnabled(false);
+            }
+        });
+        updateModels.run();
     }
 
     private int playingTrack(List<VideoSession.AudioTrack> tracks) {
@@ -2094,18 +2350,32 @@ public final class MainActivity extends ComponentActivity {
         setTheme(lightTheme ? R.style.AppThemeLight : R.style.AppTheme);
     }
 
+    private static WindowInsetsCompat applySystemInsets(View view, WindowInsetsCompat insets) {
+        Insets visible = insets.getInsets(WindowInsetsCompat.Type.systemBars()
+                | WindowInsetsCompat.Type.displayCutout() | WindowInsetsCompat.Type.ime());
+        view.setPadding(visible.left, visible.top, visible.right, visible.bottom);
+        return insets;
+    }
+
     private void applySystemBars() {
-        int flags = lightTheme ? View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR : 0;
-        if (lightTheme && android.os.Build.VERSION.SDK_INT >= 27) {
-            flags |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
-        }
+        if (android.os.Build.VERSION.SDK_INT < 35) applyLegacySystemBarColors();
+        WindowInsetsControllerCompat controller =
+                WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
+        controller.setAppearanceLightStatusBars(lightTheme);
+        controller.setAppearanceLightNavigationBars(lightTheme);
         if (fullscreen && settingsScreen == null) {
-            flags |= View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                    | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
+            controller.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+            controller.hide(WindowInsetsCompat.Type.systemBars());
+        } else {
+            controller.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_DEFAULT);
+            controller.show(WindowInsetsCompat.Type.systemBars());
         }
+    }
+
+    @SuppressWarnings("deprecation") // Before edge-to-edge enforcement, the window owns the bar colors.
+    private void applyLegacySystemBarColors() {
         getWindow().setStatusBarColor(PlayerAppearance.color(this, android.R.attr.statusBarColor));
         getWindow().setNavigationBarColor(PlayerAppearance.color(this, android.R.attr.navigationBarColor));
-        getWindow().getDecorView().setSystemUiVisibility(flags);
     }
 
     private void refreshAppearance() {
@@ -2128,7 +2398,6 @@ public final class MainActivity extends ComponentActivity {
         setTranscriptVisible(transcriptVisible);
         if (transcriptVisible) {
             cueList.setSelection(transcriptPosition);
-            followButton.setVisibility(follow ? View.GONE : View.VISIBLE);
         }
         updateResumeVideo();
         if (hasVideo && controllerVisible) playerView.showController();
@@ -2307,6 +2576,7 @@ public final class MainActivity extends ComponentActivity {
         measureStorage = null;
         screenHost.removeView(settingsScreen);
         settingsScreen = null;
+        home.setPerformanceSamplingAllowed(started);
         languageSettingsChanged = null;
         modelForm = null;
         telegramSettingsStatus = null;
@@ -2343,11 +2613,7 @@ public final class MainActivity extends ComponentActivity {
         LinearLayout page = column();
         page.setBackgroundColor(PlayerAppearance.color(this, android.R.attr.colorBackground));
         page.setClickable(true);
-        page.setOnApplyWindowInsetsListener((view, insets) -> {
-            view.setPadding(insets.getSystemWindowInsetLeft(), insets.getSystemWindowInsetTop(),
-                    insets.getSystemWindowInsetRight(), insets.getSystemWindowInsetBottom());
-            return insets;
-        });
+        ViewCompat.setOnApplyWindowInsetsListener(page, MainActivity::applySystemInsets);
         View back = PlayerAppearance.addPageHeader(page, settings, heading,
                 detail ? this::leaveSettingsDetail : this::closeSettings);
         if (scrollContent) {
@@ -2359,6 +2625,7 @@ public final class MainActivity extends ComponentActivity {
             page.addView(form, new LinearLayout.LayoutParams(-1, -2));
         }
         settingsScreen = page;
+        home.setPerformanceSamplingAllowed(false);
         screenHost.getChildAt(0).setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
         ((ViewGroup) screenHost.getChildAt(0)).setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
         screenHost.addView(page, new FrameLayout.LayoutParams(-1, -1));
@@ -2418,31 +2685,55 @@ public final class MainActivity extends ComponentActivity {
         });
         guideSection(form, "Bắt đầu nhanh",
                 "1. Chọn Mở video và chọn nguồn video.\n"
-                        + "2. Chọn Tạo transcript theo câu, rồi chọn track âm thanh và ngôn ngữ lời thoại.\n"
-                        + "3. Chọn Dịch sang ngôn ngữ đích và chờ xử lý.\n"
-                        + "4. Mở Phụ đề, chọn Bản dịch rồi bấm Áp dụng.", !modelsExpanded);
+                        + "2. Chọn Tạo transcript theo câu và chọn ngôn ngữ lời thoại. Chọn track âm thanh nếu video có nhiều track. "
+                        + "Nếu đã có phụ đề, chọn ⋮ → Nhập phụ đề (SRT/VTT).\n"
+                        + "3. Chọn Dịch → Theo câu hoặc Ngữ cảnh.\n"
+                        + "4. Chạm nút Phụ đề đến khi hiện Dịch. Chạm vào một câu trong transcript để tua đến câu đó.", !modelsExpanded);
         guideSection(form, "Mở và lưu video",
-                "Mở video → Chọn tệp trên thiết bị để phát tệp có sẵn. Dùng Tải video từ URL để nhập liên kết.\n\n"
-                        + "Trong Telegram, có thể chia sẻ tệp video sang AI Player. Với liên kết bài đăng, "
-                        + "dán vào Tải video từ URL và đăng nhập Telegram khi ứng dụng yêu cầu.\n\n"
-                        + "Tìm lại video đã nhập trong Video đã lưu.", false);
+                "Mở video → Chọn tệp trên thiết bị để phát tệp có sẵn. Dùng Tải video từ URL để nhập liên kết. "
+                        + "Nếu liên kết dẫn đến trang web, thử Tìm video trên trang.\n\n"
+                        + "Trong Telegram, dùng Chia sẻ → AI Player để mở tệp video hoặc liên kết bài đăng. "
+                        + "Đăng nhập Telegram nếu ứng dụng yêu cầu.\n\n"
+                        + "Mở lại video từ danh sách gần đây trên màn hình chính hoặc tìm video đã tải trong Video đã lưu.", false);
         guideSection(form, "Phụ đề và phát âm",
-                "Vào Cài đặt → Ngôn ngữ và phụ đề để đổi ngôn ngữ mặc định, cỡ chữ và màu chữ phụ đề.\n\n"
-                        + "Trên màn hình phát, mở Phụ đề để chọn văn bản hiển thị. "
-                        + "Mở Phát âm, chọn nội dung và bấm Áp dụng để nghe giọng đọc.", false);
-        LinearLayout models = guideSection(form, "Dịch ngoại tuyến",
-                "Mở Model và giọng đọc → Dịch offline (ML Kit). Tải model cho ngôn ngữ nguồn và đích theo "
-                        + "trạng thái hiển thị. Dùng Wi-Fi hoặc dữ liệu di động khi tải lần đầu. "
-                        + "Sau khi tải đủ model, bạn có thể dịch ngoại tuyến.", modelsExpanded);
+                "Chạm nút Phụ đề hoặc Phát âm để chuyển giữa Tắt, Gốc và Dịch. "
+                        + "Cả hai bám theo mốc thời gian của từng câu. Transcript hiển thị lời gốc và bản dịch khi câu đã được dịch.\n\n"
+                        + "Vào Cài đặt → Ngôn ngữ và phụ đề để đổi ngôn ngữ, cỡ chữ, màu chữ và màu nền phụ đề. "
+                        + "Vào Cài đặt → Model và giọng đọc → Chọn giọng đọc để nghe thử giọng.\n\n"
+                        + "Trong menu ⋮ của trình phát, dùng Xuất tệp hoặc Chia sẻ để lưu hay gửi lời gốc, bản dịch hoặc nội dung song ngữ.", false);
+        guideSection(form, "Dịch ngoại tuyến",
+                "Theo câu: chọn M2M100 hoặc Tự động. Tự động dùng ML Kit cho cặp có tiếng Anh "
+                        + "và Qwen cho cặp ngoài tiếng Anh. Mở Model và giọng đọc → Dịch offline → Dịch theo câu "
+                        + "để kiểm tra M2M100 và Gói ngôn ngữ ML Kit.\n\n"
+                        + "Ngữ cảnh: Qwen dịch sang tiếng Việt dựa trên transcript của cả video. "
+                        + "Có thể dịch Theo câu sang tiếng Việt trước, rồi chọn Dịch lại → Ngữ cảnh → Rà soát bản dịch tự động đã có "
+                        + "để hiệu đính và giữ các câu đã sửa tay. Nhập tên riêng, thuật ngữ và xưng hô ưu tiên nếu cần.\n\n"
+                        + "Hai chế độ chạy trên thiết bị sau khi đã cài model cần thiết.", false);
+        LinearLayout models = guideSection(form, "Tải, cài lại và xuất model",
+                "Trong Cài đặt → Model và giọng đọc, mở Nhận dạng để quản lý Vosk hoặc Dịch offline để quản lý M2M100, Qwen và ML Kit.\n\n"
+                        + "Khi tạo transcript, Model cho lượt mới chọn Vosk Large nếu đã cài cho ngôn ngữ lời thoại. "
+                        + "Nếu chỉ có Vosk Small, ứng dụng chọn Small. Có thể đổi model cho từng lượt.\n\n"
+                        + "Với Vosk, M2M100 và Qwen, dùng Nhập tệp model để cài lần đầu. "
+                        + "Với M2M100, mở ⋮ để tìm mục này. Khi đã cài, chọn ⋮ → Cài lại từ tệp hoặc ⋮ → Xuất model.\n\n"
+                        + "Vosk và M2M100 xuất tệp ZIP. Qwen xuất tệp GGUF. Có thể dùng tệp đã xuất để cài lại trên cả hai bản ứng dụng. "
+                        + "Model ML Kit được tải lại từ tab Dịch offline.", modelsExpanded);
         compactButton(models, "Mở Model và giọng đọc", () -> {
             showModels(ModelTab.TRANSLATION, () -> showGuide(true));
         });
+        guideSection(form, "Hiệu năng thiết bị và Qwen",
+                "Ở cuối màn hình chính, Hiệu năng thiết bị hiển thị mức dùng CPU của AI Player, tên GPU "
+                        + "và RAM khả dụng. Mở Chi tiết để xem biểu đồ CPU và RAM trong 60 giây, "
+                        + "RAM của ứng dụng và thông tin lượt dịch Qwen gần nhất trong phiên.\n\n"
+                        + "Vào Cài đặt → Model và giọng đọc → Dịch offline → Dịch theo ngữ cảnh → Ưu tiên xử lý Qwen. "
+                        + "Tự động và CPU hiện dùng CPU. Ưu tiên GPU cần bản APK có Vulkan và thiết bị tương thích. "
+                        + "Thay đổi có hiệu lực từ lượt Qwen tiếp theo. Nếu GPU không khả dụng hoặc khởi tạo thất bại, Qwen dùng CPU. "
+                        + "Xem tiến độ dịch để biết bộ xử lý thực tế.", false);
         guideSection(form, "Xử lý sự cố",
                 "Không mở được video? Thử mở lại tệp từ thiết bị, hoặc kiểm tra kết nối và quyền truy cập liên kết.\n\n"
                         + "Không thấy phụ đề? Kiểm tra video đã có transcript hoặc phụ đề nhập, "
-                        + "sau đó chọn nội dung hiển thị trong Phụ đề.\n\n"
-                        + "Dịch 361/363 câu nghĩa là còn 2 câu chưa dịch. Mở lại video và chọn Dịch lại "
-                        + "2 câu thiếu. Nếu vẫn còn thiếu và thấy nút Xử lý 2 câu thiếu, hãy mở nút đó "
+                        + "sau đó chuyển Phụ đề sang Gốc hoặc Dịch.\n\n"
+                        + "Nếu còn câu chưa dịch hoặc cần rà soát, "
+                        + "chọn Dịch tiếp "
                         + "để xem các lựa chọn xử lý.", false);
     }
 
@@ -2481,7 +2772,7 @@ public final class MainActivity extends ComponentActivity {
                         + " · Phụ đề " + settings.subtitleSize + " sp", this::showLanguageSettings);
         settingsEntry(form, R.drawable.ic_control_download, "Model và giọng đọc",
                 "Nhận dạng · Dịch offline · Phát âm", this::showModels);
-        Button storage = settingsEntry(form, R.drawable.ic_control_library, "Dữ liệu và bộ nhớ",
+        Button storage = settingsEntry(form, R.drawable.ic_control_info, "Dữ liệu và bộ nhớ",
                 "Đang tính dung lượng…", this::showStorage);
         loadStorage((usage, entries) -> {
             if (storage.isAttachedToWindow()) storage.setText(settingsEntryText("Dữ liệu và bộ nhớ",
@@ -2557,27 +2848,31 @@ public final class MainActivity extends ComponentActivity {
         LinearLayout form = form();
         View page = settingsPage("Dữ liệu và bộ nhớ", form, true);
         storagePage = page;
-        settingsEntry(form, R.drawable.ic_control_library, "Xóa lịch sử hoạt động",
+        settingsEntry(form, R.drawable.ic_control_delete, "Xóa lịch sử hoạt động",
                 "Video gần đây · Liên kết Telegram đã mở", this::showClearActivityHistory);
         LinearLayout content = column();
         form.addView(content, new LinearLayout.LayoutParams(-1, -2));
         TextView measurement = new TextView(this);
         measurement.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        measurement.setVisibility(View.GONE);
         form.addView(measurement);
-        Button refresh = compactButton(form, "Đo lại", () -> {
+        String refreshLabel = "Đo lại";
+        Button refresh = settingsActionButton(form, refreshLabel, () -> {
             refreshVisibleStorage();
             work.models.refreshTranslations();
         });
         measureStorage = () -> {
             int request = ++storageMeasurement;
             refresh.setEnabled(false);
-            measurement.setText("Đang đo…");
+            refresh.setText("Đang đo…");
             loadStorage((usage, entries) -> {
                 if (settingsScreen != page || request != storageMeasurement) return;
                 content.removeAllViews();
                 renderStorage(content, usage, entries.size(), page);
                 String time = android.text.format.DateFormat.getTimeFormat(this).format(new java.util.Date(usage.measuredAt));
                 measurement.setText("Cập nhật lúc " + time);
+                measurement.setVisibility(View.VISIBLE);
+                refresh.setText(refreshLabel);
                 refresh.setEnabled(true);
             });
         };
@@ -2664,20 +2959,23 @@ public final class MainActivity extends ComponentActivity {
             scope.setText("Chưa gồm model dịch offline");
             form.addView(scope);
         }
-        int[] colors = {0xff527ff2, 0xff37bf97, 0xffa586ef, 0xffe5ad57};
+        PlayerAppearance.IconRole[] roles = {PlayerAppearance.IconRole.VIDEO, PlayerAppearance.IconRole.TRANSCRIPT,
+                PlayerAppearance.IconRole.MODEL, PlayerAppearance.IconRole.WARNING};
+        int[] colors = new int[roles.length];
+        for (int i = 0; i < roles.length; i++) colors[i] = roles[i].color(this);
         storageBar(form, usage.total(),
                 new long[]{usage.videoBytes, usage.transcriptBytes, usage.modelBytes, usage.cacheBytes}, colors);
         storageEntry(form, R.drawable.ic_control_library, "Video đã lưu", usage.videos + " video · ",
-                usage.videoBytes, usage.total(), colors[0], () -> showSavedVideos(true));
+                usage.videoBytes, usage.total(), roles[0], () -> showSavedVideos(true));
         storageEntry(form, R.drawable.ic_control_captions, "Transcript và bản dịch", transcriptCount + " video · ",
-                usage.transcriptBytes, usage.total(), colors[1], this::showTranscriptStorage);
+                usage.transcriptBytes, usage.total(), roles[1], this::showTranscriptStorage);
         storageEntry(form, R.drawable.ic_control_download, "Model nhận dạng", "", usage.modelBytes,
-                usage.total(), colors[2], () -> showModels(ModelTab.RECOGNITION, this::showStorage));
+                usage.total(), roles[2], () -> showModels(ModelTab.RECOGNITION, this::showStorage));
         settingsEntry(form, R.drawable.ic_control_download, "Model dịch offline",
                 noTranslationModels ? storageSize(0) : "Chưa đo được dung lượng",
                 () -> showModels(ModelTab.TRANSLATION, this::showStorage));
         Button clear = storageEntry(form, R.drawable.ic_control_info, "Dọn bộ nhớ đệm", "",
-                usage.cacheBytes, usage.total(), colors[3], () ->
+                usage.cacheBytes, usage.total(), roles[3], () ->
                         new PlayerAppearance.DialogBuilder(this, settings)
                                 .positiveRole(PlayerAppearance.ButtonRole.CONFIRM_DELETE)
                                 .setTitle("Dọn bộ nhớ đệm?")
@@ -2701,14 +2999,14 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private Button storageEntry(LinearLayout form, int icon, String title, String prefix,
-                                long bytes, long total, int color, Runnable open) {
+                                long bytes, long total, PlayerAppearance.IconRole role, Runnable open) {
         double share = total == 0 ? 0 : bytes / (double) total;
         java.text.NumberFormat percent = java.text.NumberFormat.getPercentInstance();
         percent.setMaximumFractionDigits(1);
         String ratio = share > 0 && share < 0.001 ? "<" + percent.format(0.001) : percent.format(share);
         Button button = settingsEntry(form, icon, title,
                 prefix + storageSize(bytes) + " · " + ratio, open);
-        button.setCompoundDrawableTintList(android.content.res.ColorStateList.valueOf(color));
+        PlayerAppearance.setLeadingIcon(button, icon, role.tint(this), 0);
         return button;
     }
 
@@ -2740,9 +3038,6 @@ public final class MainActivity extends ComponentActivity {
             for (PlaybackSessionStore.StoredTranscript entry : entries) {
                 addStoredTranscriptRow(form, entry, page);
             }
-            if (entries.stream().anyMatch(entry -> !canDeleteTranscript(entry.snapshot.uri))) {
-                settingsHeading(form, "Hãy về màn khởi động và đợi tác vụ đang chạy hoàn tất để xóa dữ liệu video hiện tại.");
-            }
         });
     }
 
@@ -2764,7 +3059,7 @@ public final class MainActivity extends ComponentActivity {
 
         android.widget.ImageView icon = new android.widget.ImageView(this);
         icon.setImageResource(R.drawable.ic_control_captions);
-        icon.setImageTintList(PlayerAppearance.controlIconTint(this));
+        icon.setImageTintList(PlayerAppearance.IconRole.TRANSCRIPT.tint(this));
         item.addView(icon, new LinearLayout.LayoutParams(dp(24), dp(24)));
 
         LinearLayout labels = column();
@@ -2848,6 +3143,7 @@ public final class MainActivity extends ComponentActivity {
         private final Spinner mode;
         private final android.widget.CheckBox missing;
         private final List<Integer> indexes = new ArrayList<>();
+        private final java.util.Set<Integer> expanded = new java.util.HashSet<>();
 
         StoredCueAdapter(PlaybackSessionStore.Snapshot snapshot, TextView summary, Spinner mode,
                          android.widget.CheckBox missing) {
@@ -2899,12 +3195,27 @@ public final class MainActivity extends ComponentActivity {
             TextView translation = (TextView) body.getChildAt(2);
             int selectedMode = mode.getSelectedItemPosition();
             timestamp.setText(cue.translationNeedsReview ? time + " · Cần xem lại" : time);
+            int index = indexes.get(position);
+            boolean showFullText = expanded.contains(index);
+            for (TextView preview : Arrays.asList(original, translation)) {
+                preview.setSingleLine(!showFullText);
+                preview.setMaxLines(showFullText ? Integer.MAX_VALUE : 1);
+                preview.setEllipsize(showFullText ? null : TextUtils.TruncateAt.END);
+            }
+            body.setOnClickListener(v -> {
+                if (showFullText) expanded.remove(index);
+                else expanded.add(index);
+                notifyDataSetChanged();
+            });
+            androidx.core.view.ViewCompat.replaceAccessibilityAction(body,
+                    androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_CLICK,
+                    showFullText ? "Thu gọn câu" : "Đọc đầy đủ câu",
+                    (v, arguments) -> v.performClick());
             original.setText(cue.sourceText);
             original.setVisibility(selectedMode == 2 ? View.GONE : View.VISIBLE);
             translation.setText(cue.hasTranslation() ? cue.targetText : "Chưa có bản dịch");
             translation.setVisibility(selectedMode == 1 ? View.GONE : View.VISIBLE);
             Button edit = (Button) line.getChildAt(1);
-            int index = indexes.get(position);
             edit.setContentDescription("Sửa câu " + time);
             edit.setOnClickListener(v -> editStoredCue(this, index));
             return line;
@@ -3020,21 +3331,25 @@ public final class MainActivity extends ComponentActivity {
         });
     }
 
-    private boolean canDeleteTranscript(Uri uri) {
-        return work.transcriptMutation() == null
-                && (!uri.equals(session.videoUri()) || (!hasVideo && !session.busy));
+    private boolean checkTranscriptDeletion(Uri uri) {
+        if (work.transcriptMutation() != null) {
+            storageMessage("Đang cập nhật dữ liệu transcript. Hãy thử lại sau.");
+            return false;
+        }
+        if (uri.equals(session.videoUri()) && session.busy) {
+            storageMessage("Video này đang có tác vụ xử lý. Hãy đợi tác vụ kết thúc rồi thử lại.");
+            return false;
+        }
+        return true;
     }
 
     private void showTranscriptActions(PlaybackSessionStore.StoredTranscript entry, View page) {
         List<CharSequence> labels = new ArrayList<>();
         labels.add("Xuất tệp");
         labels.add("Chia sẻ");
-        boolean deletionAvailable = canDeleteTranscript(entry.snapshot.uri);
         String removeAll = entry.translated ? "Xóa transcript và bản dịch" : "Xóa transcript";
-        if (deletionAvailable) {
-            if (entry.translated) labels.add(PlayerAppearance.dangerLabel(this, "Xóa bản dịch"));
-            labels.add(PlayerAppearance.dangerLabel(this, removeAll));
-        }
+        if (entry.translated) labels.add(PlayerAppearance.dangerLabel(this, "Xóa bản dịch"));
+        labels.add(PlayerAppearance.dangerLabel(this, removeAll));
         new PlayerAppearance.DialogBuilder(this, settings).setTitle(entry.snapshot.name)
                 .setItems(labels.toArray(new CharSequence[0]), (dialog, index) -> {
                     if (index < 2) {
@@ -3047,6 +3362,7 @@ public final class MainActivity extends ComponentActivity {
                             showTranscriptExportOptions(snapshot, index == 1);
                         });
                     } else {
+                        if (!checkTranscriptDeletion(entry.snapshot.uri)) return;
                         boolean translationOnly = entry.translated && index == 2;
                         confirmTranscriptRemoval(entry, translationOnly,
                                 translationOnly ? "Xóa bản dịch" : removeAll, page);
@@ -3104,7 +3420,7 @@ public final class MainActivity extends ComponentActivity {
                                     .addCategory(Intent.CATEGORY_OPENABLE)
                                     .setType(format.mimeType)
                                     .putExtra(Intent.EXTRA_TITLE, file.getName());
-                            startActivityForResult(create, EXPORT_TRANSCRIPT);
+                            transcriptExporter.launch(create);
                         }
                     } catch (RuntimeException error) {
                         if (!share) pendingTranscriptExport = null;
@@ -3160,10 +3476,7 @@ public final class MainActivity extends ComponentActivity {
                 .setNegativeButton("Hủy", null)
                 .setPositiveButton("Xóa", (dialog, which) -> {
                     Uri uri = entry.snapshot.uri;
-                    if (!canDeleteTranscript(uri)) {
-                        storageMessage("Dữ liệu đang được sử dụng. Hãy thử lại sau.");
-                        return;
-                    }
+                    if (!checkTranscriptDeletion(uri)) return;
                     work.removeTranscript(entry, translationOnly, settings.sourceLanguage, updated -> {
                         if (destroyed) return;
                         updateResumeVideo();
@@ -3229,7 +3542,7 @@ public final class MainActivity extends ComponentActivity {
                 chooseTrack(true);
             }).setEnabled(!session.busy);
         }
-        processingLabel(controls, "Dịch · ML Kit Offline hoặc dịch theo ngữ cảnh Offline");
+        processingLabel(controls, "Dịch offline theo câu hoặc theo ngữ cảnh");
         if (!session.cues.isEmpty()) {
             compactButton(controls, session.targetLanguage == null ? "Dịch" : "Dịch lại", () -> {
                 dialog.dismiss();
@@ -3373,15 +3686,18 @@ public final class MainActivity extends ComponentActivity {
     private void showModels(ModelTab initialTab, Runnable parent) {
         LinearLayout controls = form();
         LinearLayout page = settingsPage("Model và giọng đọc", controls, true, false);
-        compactButton(controls, "Chọn giọng đọc", this::showDefaultVoices);
         settingsParent = parent;
+        mlKitExpanded = false;
+        otherTranslationLanguagesExpanded = false;
 
         RadioGroup tabs = new RadioGroup(this);
         tabs.setOrientation(LinearLayout.HORIZONTAL);
         controls.addView(tabs, new LinearLayout.LayoutParams(-1, -2));
         int recognitionId = addModelTab(tabs, "Nhận dạng");
         int translationId = addModelTab(tabs, "Dịch offline");
-        tabs.check(initialTab == ModelTab.RECOGNITION ? recognitionId : translationId);
+        int voiceId = addModelTab(tabs, "Giọng đọc");
+        tabs.check(initialTab == ModelTab.RECOGNITION ? recognitionId
+                : initialTab == ModelTab.TRANSLATION ? translationId : voiceId);
 
         ScrollView scroll = new ScrollView(this);
         modelForm = form();
@@ -3390,7 +3706,8 @@ public final class MainActivity extends ComponentActivity {
         modelTab = initialTab;
 
         tabs.setOnCheckedChangeListener((group, checkedId) -> {
-            modelTab = checkedId == recognitionId ? ModelTab.RECOGNITION : ModelTab.TRANSLATION;
+            modelTab = checkedId == recognitionId ? ModelTab.RECOGNITION
+                    : checkedId == translationId ? ModelTab.TRANSLATION : ModelTab.VOICE;
             renderModels();
             scroll.scrollTo(0, 0);
         });
@@ -3402,7 +3719,10 @@ public final class MainActivity extends ComponentActivity {
         RadioButton tab = new RadioButton(this);
         tab.setId(View.generateViewId());
         tab.setText(label);
+        tab.setButtonDrawable(null);
+        tab.setGravity(Gravity.CENTER);
         PlayerAppearance.styleButton(tab, PlayerAppearance.ButtonRole.UTILITY, settings);
+        tab.setPadding(dp(4), dp(4), dp(4), dp(4));
         tab.setMinHeight(dp(48));
         tabs.addView(tab, new RadioGroup.LayoutParams(0, -2, 1));
         return tab.getId();
@@ -3440,13 +3760,27 @@ public final class MainActivity extends ComponentActivity {
             });
         } else {
             resetModelRows();
-            renderTranslationModels(models, source);
+            if (modelTab == ModelTab.TRANSLATION) renderTranslationModels(models, source);
+            else renderModelVoiceSettings();
         }
+    }
+
+    private void renderModelVoiceSettings() {
+        compactButton(modelForm, "Chọn giọng đọc", this::showDefaultVoices);
+        compactButton(modelForm, "Cài dữ liệu giọng đọc", () -> {
+            try {
+                startActivity(new Intent(android.speech.tts.TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA));
+            } catch (android.content.ActivityNotFoundException error) {
+                storageMessage("Hãy mở cài đặt bộ máy đọc văn bản của thiết bị để cài giọng.");
+            }
+        });
     }
 
     private void resetModelRows() {
         modelForm.removeAllViews();
-        if (session.busy) modelText("Có tác vụ video đang chạy. Hãy đợi để quản lý model.", false);
+        if (session.busy && modelTab != ModelTab.VOICE) {
+            modelText("Có tác vụ video đang chạy. Hãy đợi để quản lý model.", false);
+        }
     }
 
     private void renderRecognitionModels(OfflineModels models, String source, java.util.Map<String, Long> sizes) {
@@ -3455,6 +3789,7 @@ public final class MainActivity extends ComponentActivity {
         recognition.addAll(SOURCE_LANGUAGES);
         recognition.addAll(VoskModelStore.largeModelKeys());
         modelText("Tạo transcript (Vosk) · Lớn nhất trước", true);
+        if (models.voskImportError != null) modelText(models.voskImportError, false);
         boolean recognitionAvailable = !session.busy && !OfflineModels.pending(models.recognition);
         List<String> ordered = new ArrayList<>(recognition);
         ordered.sort(java.util.Comparator.comparingLong((String language) -> sizes.getOrDefault(language, -1L))
@@ -3464,83 +3799,285 @@ public final class MainActivity extends ComponentActivity {
             OfflineModels.Operation operation = models.recognition.get(language);
             if (downloaded && operation == OfflineModels.Operation.DOWNLOAD_FAILED) operation = null;
             String model = VoskModelStore.modelName(language);
-            modelRow(language, model + (language.equals(source) ? " · Nguồn đang chọn" : ""), downloaded,
-                    models.vosk.isBundled(language), operation, models.recognitionPercent, recognitionAvailable,
-                    sizes.getOrDefault(language, -1L),
-                    () -> models.downloadRecognition(language), () -> models.deleteRecognition(language));
+            String role = model + (language.equals(source) ? " · Nguồn đang chọn" : "");
+            if (language.equals(models.voskImportLanguage)) {
+                String progress = models.recognitionPercent < 0 ? "" : " · " + models.recognitionPercent + "%";
+                LinearLayout row = modelRowDetails(language, "Đang nhập" + progress, role, -1,
+                        PlayerAppearance.StatusIcon.WORKING);
+                compactButton(row, "Dừng nhập", models::cancelVoskImport);
+                continue;
+            }
+            Runnable importFile = () -> {
+                if (session.busy || OfflineModels.pending(models.recognition)) return;
+                pendingVoskImport = language;
+                pick(voskPicker, "*/*");
+            };
+            modelRow(language, role, downloaded, models.vosk.isBundled(language), operation,
+                    models.recognitionPercent, recognitionAvailable, sizes.getOrDefault(language, -1L),
+                    () -> models.downloadRecognition(language), () -> models.deleteRecognition(language), importFile, language);
+            if (!downloaded) {
+                Button importModel = compactButton(modelForm, "Nhập tệp model", importFile);
+                importModel.setContentDescription("Nhập tệp model " + model);
+                importModel.setEnabled(recognitionAvailable);
+            }
         }
 
     }
 
+    private void renderM2mModel(OfflineModels models) {
+        boolean supported = ContextModelStore.supported();
+        boolean installed = models.m2m.installed();
+        long bytes = installed ? models.m2m.installedBytes() : -1;
+        String status = installed ? "Đã tải" : "Chưa tải · Khoảng 1,15 GB";
+        String role = installed ? "Dịch trực tiếp" : "";
+        PlayerAppearance.StatusIcon icon = installed ? PlayerAppearance.StatusIcon.SUCCESS
+                : PlayerAppearance.StatusIcon.WARNING;
+        if (!supported) {
+            status = "Cần Android ARM64";
+            icon = PlayerAppearance.StatusIcon.WARNING;
+        } else if (models.m2mDownloading) {
+            status = models.m2mStatus();
+            icon = PlayerAppearance.StatusIcon.WORKING;
+        } else if (models.m2mError != null) {
+            status = models.m2mError;
+            icon = PlayerAppearance.StatusIcon.ERROR;
+        }
+        LinearLayout row = modelRowDetails(M2mModelStore.NAME, status, role, bytes, icon,
+                "M2M100 · Dịch theo câu", null, false);
+        if (!supported) return;
+        if (!installed && !models.m2mDownloading) {
+            Button download = compactButton(row, "Tải", () -> {
+                if (!session.busy && !models.m2mDownloading) models.toggleM2mDownload();
+            });
+            download.setContentDescription("Tải model " + M2mModelStore.NAME);
+            stylePrimaryButton(download);
+            download.setEnabled(!session.busy);
+            Button importModel = compactButton(modelForm, "Nhập tệp model", () -> pickM2mFiles(models));
+            importModel.setContentDescription("Nhập tệp model " + M2mModelStore.NAME);
+            importModel.setEnabled(!session.busy);
+            return;
+        }
+        Button menu = iconButton(row, R.drawable.ic_control_more, "Thao tác model " + M2mModelStore.NAME,
+                false, null);
+        menu.setEnabled(models.m2mDownloading || !session.busy);
+        menu.setOnClickListener(anchor -> {
+            PopupMenu popup = new PopupMenu(new ContextThemeWrapper(this, R.style.PlayerMenuTheme),
+                    anchor, Gravity.END);
+            if (models.m2mDownloading) {
+                popup.getMenu().add("Dừng").setOnMenuItemClickListener(item -> {
+                    if (models.m2mDownloading) models.toggleM2mDownload();
+                    return true;
+                });
+            } else if (models.m2m.installed()) {
+                addModelMenuItem(popup, "Xuất model", android.R.drawable.ic_menu_save,
+                        PlayerAppearance.IconRole.MODEL).setOnMenuItemClickListener(item -> {
+                    pickModelExport("m2m100");
+                    return true;
+                });
+                addModelMenuItem(popup, "Cài lại từ tệp", R.drawable.ic_control_download,
+                        PlayerAppearance.IconRole.MODEL).setOnMenuItemClickListener(item -> {
+                    if (!session.busy && !models.m2mDownloading) {
+                        new PlayerAppearance.DialogBuilder(this, settings)
+                                .setTitle("Cài lại " + M2mModelStore.NAME)
+                                .setMessage("Chọn tệp ZIP đã xuất hoặc chọn đủ 5 tệp rời trong một lượt.")
+                                .setNegativeButton("Hủy", null)
+                                .setPositiveButton("Chọn tệp", (dialog, which) -> pickM2mFiles(models))
+                                .show();
+                    }
+                    return true;
+                });
+                addModelMenuItem(popup, PlayerAppearance.dangerLabel(this, "Xóa model"),
+                    R.drawable.ic_control_delete, PlayerAppearance.IconRole.DELETE).setOnMenuItemClickListener(item -> {
+                    if (session.busy) return true;
+                    new PlayerAppearance.DialogBuilder(this, settings)
+                            .positiveRole(PlayerAppearance.ButtonRole.CONFIRM_DELETE)
+                            .setTitle("Xóa model " + M2mModelStore.NAME + "?")
+                            .setMessage("Dung lượng dự kiến thu hồi · " + storageSize(models.m2m.installedBytes()))
+                            .setNegativeButton("Hủy", null)
+                            .setPositiveButton("Xóa", (dialog, which) -> {
+                                if (!session.busy) models.deleteM2mModel();
+                            }).show();
+                    return true;
+                });
+            }
+            popup.show();
+        });
+    }
+
+    private void pickM2mFiles(OfflineModels models) {
+        if (session.busy || models.m2mDownloading) return;
+        m2mPicker.launch(new Intent(Intent.ACTION_OPEN_DOCUMENT)
+                .addCategory(Intent.CATEGORY_OPENABLE).setType("*/*")
+                .putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true));
+    }
+
     private void renderTranslationModels(OfflineModels models, String source) {
-        modelText("Dịch theo ngữ cảnh video", true);
+        modelText("Dịch theo câu", true);
+        renderM2mModel(models);
+        renderMlKitModels(models, source);
+        modelText("Dịch theo ngữ cảnh", true);
+        if (ContextModelStore.supported()) renderQwenProcessor();
         if (!ContextModelStore.supported()) {
             modelText("Model Qwen yêu cầu Android ARM64.", false);
         } else if (models.contextual.installed() && !models.contextPending()) {
-            modelRow("vi", ContextModelStore.NAME, true, false, models.contextOperation, -1,
+            modelRow("vi", "Dịch sang tiếng Việt", true, false, models.contextOperation, -1,
                     !session.busy, models.contextual.file.length(),
-                    models::downloadContextModel, models::deleteContextModel);
+                    models::downloadContextModel, models::deleteContextModel,
+                    () -> {
+                        if (!models.contextPending()) pick(qwenPicker, "*/*");
+                    }, "qwen");
             if (models.contextError != null) modelText(models.contextError, false);
         } else {
             PlayerAppearance.StatusIcon icon = models.contextPending() ? PlayerAppearance.StatusIcon.WORKING
                     : models.contextError != null ? PlayerAppearance.StatusIcon.ERROR : PlayerAppearance.StatusIcon.WARNING;
-            LinearLayout row = modelRowDetails("vi", contextDownloadStatus(models), ContextModelStore.NAME, -1, icon);
+            LinearLayout row = modelRowDetails(ContextModelStore.NAME, contextDownloadStatus(models),
+                    "Dịch sang tiếng Việt", -1, icon, "Qwen · Dịch theo ngữ cảnh", null, false);
             Button action = compactButton(row, contextDownloadAction(models),
                     models.contextPending() ? models::cancelContextDownload : models::downloadContextModel);
             PlayerAppearance.styleButton(action, PlayerAppearance.ButtonRole.ACCENT, settings);
             action.setEnabled(models.contextPending() ? !models.contextCancelling() : !session.busy);
         }
+        if (ContextModelStore.supported() && !models.contextPending() && !models.contextual.installed()) {
+            Button importModel = compactButton(modelForm, "Nhập tệp model", () -> pick(qwenPicker, "*/*"));
+            importModel.setContentDescription("Nhập tệp model " + ContextModelStore.NAME);
+            importModel.setEnabled(!session.busy);
+        }
+    }
+
+    private void renderQwenProcessor() {
+        modelText("Ưu tiên xử lý Qwen", true);
+        boolean gpuAvailable = ContextTranslationClient.isGpuAvailable();
+        RadioGroup choices = new RadioGroup(this);
+        for (AppSettings.QwenProcessor processor : AppSettings.QwenProcessor.values()) {
+            RadioButton option = new RadioButton(this);
+            option.setId(View.generateViewId());
+            option.setText(processor.label);
+            option.setMinHeight(dp(48));
+            option.setEnabled(processor != AppSettings.QwenProcessor.GPU || gpuAvailable);
+            choices.addView(option);
+            if (processor == settings.qwenProcessor) choices.check(option.getId());
+            option.setOnClickListener(view -> {
+                settings.qwenProcessor = processor;
+                settings.save(this);
+            });
+        }
+        modelForm.addView(choices);
+        if (!gpuAvailable) modelText("GPU Vulkan không khả dụng trên thiết bị hoặc bản cài này.", false);
+        modelText("Áp dụng cho lượt xử lý Qwen tiếp theo.", false);
+    }
+
+    private void renderMlKitModels(OfflineModels models, String source) {
         String target = LanguageUtils.normalizeLanguage(settings.targetLanguage, "vi");
-        modelText("Dịch offline (ML Kit)", true);
-        modelText("Cặp dịch đang chọn: " + ("auto".equals(source) ? "Tự động" : languageName(source))
-                + " → " + languageName(target), false);
+        boolean autoSource = "auto".equals(source);
+        String pair = (autoSource ? "Tự động" : languageName(source)) + " → " + languageName(target);
         Set<String> required = new LinkedHashSet<>();
         if (!source.equals(target)) {
             if (OfflineModels.needsTranslationModel(source)) required.add(source);
             if (OfflineModels.needsTranslationModel(target)) required.add(target);
         }
-        if (source.equals(target)) modelText("Nguồn và đích giống nhau. Không cần tải model để dịch.", false);
-        if ("auto".equals(source)) modelText("Model nguồn được xác định khi dịch transcript.", false);
+        boolean translationKnown = models.translationsLoaded && !models.translationQueryFailed;
+        boolean pending = OfflineModels.pending(models.translation);
+        boolean translationAvailable = translationKnown && !session.busy && !pending;
+        List<String> missing = new ArrayList<>(required);
+        missing.removeAll(models.downloadedTranslations);
+        boolean retry = missing.stream().anyMatch(language ->
+                models.translation.get(language) == OfflineModels.Operation.DOWNLOAD_FAILED);
+        String status;
         if (models.translationQueryFailed) {
-            modelText("Không kiểm tra được model dịch trên thiết bị.", false);
-            compactButton(modelForm, "Kiểm tra lại", () -> {
+            status = "Chưa kiểm tra được";
+        } else if (!models.translationsLoaded) {
+            status = "Đang kiểm tra";
+        } else if (pending) {
+            status = "Đang cập nhật gói";
+        } else if (!missing.isEmpty()) {
+            List<String> names = new ArrayList<>();
+            for (String language : missing) names.add(languageName(language));
+            status = (retry ? "Tải thất bại · Thiếu gói " : "Thiếu gói ") + String.join(", ", names);
+        } else if (source.equals(target)) {
+            status = "Không cần gói dịch";
+        } else {
+            status = autoSource ? "Gói nguồn xác định khi dịch" : "Đủ gói";
+        }
+        addModelDisclosure("Gói ngôn ngữ ML Kit", mlKitExpanded, () -> {
+            mlKitExpanded = !mlKitExpanded;
+            renderModels();
+        });
+        LinearLayout summary = new LinearLayout(this);
+        summary.setGravity(Gravity.CENTER_VERTICAL);
+        modelForm.addView(summary, new LinearLayout.LayoutParams(-1, -2));
+        TextView pairStatus = new TextView(this);
+        pairStatus.setText(pair + " · " + status);
+        pairStatus.setTextSize(settings.textSize(14));
+        pairStatus.setPadding(dp(8), dp(4), dp(8), dp(4));
+        summary.addView(pairStatus, new LinearLayout.LayoutParams(0, -2, 1));
+        if (models.translationQueryFailed) {
+            compactButton(summary, "Kiểm tra lại", () -> {
                 models.refreshTranslations();
                 renderModels();
             });
-        } else if (!models.translationsLoaded) {
-            modelText("Đang kiểm tra model dịch…", false);
         }
-
-        boolean translationKnown = models.translationsLoaded && !models.translationQueryFailed;
-        boolean translationAvailable = translationKnown && !session.busy && !OfflineModels.pending(models.translation);
-        List<String> missing = new ArrayList<>(required);
-        missing.removeAll(models.downloadedTranslations);
         if (translationKnown && !missing.isEmpty()) {
-            String downloadLabel = "auto".equals(source) ? "Tải model ngôn ngữ đích" : "Tải model cần thiết";
-            Button download = compactButton(modelForm, downloadLabel, () -> models.downloadTranslations(missing));
+            Button download = compactButton(summary, retry ? "Thử lại" : "Tải",
+                    () -> models.downloadTranslations(missing));
+            download.setContentDescription("Tải gói ML Kit còn thiếu");
             stylePrimaryButton(download);
             download.setEnabled(translationAvailable);
         }
-        Set<String> translation = new LinkedHashSet<>(Arrays.asList("zh", "ja", "en", "vi", "ko"));
-        translation.addAll(required);
-        List<String> installed = new ArrayList<>(models.downloadedTranslations);
-        installed.sort((a, b) -> languageName(a).compareToIgnoreCase(languageName(b)));
-        translation.addAll(installed);
-        for (String language : translation) {
+        if (!mlKitExpanded) return;
+
+        Set<String> activeLanguages = new LinkedHashSet<>();
+        if (!autoSource) activeLanguages.add(source);
+        activeLanguages.add(target);
+        for (String language : activeLanguages) {
             String role = language.equals(source) ? (language.equals(target) ? "Nguồn và đích" : "Nguồn")
-                    : (language.equals(target) ? "Đích" : "");
-            if (TranslateLanguage.ENGLISH.equals(language)) {
-                modelRowDetails(language, "Có sẵn · Không cần tải riêng", role, -1,
-                        PlayerAppearance.StatusIcon.SUCCESS);
-                continue;
-            }
-            if (!translationKnown) {
-                modelRowDetails(language, models.translationQueryFailed
-                        ? "Chưa rõ trạng thái" : "Đang kiểm tra…", role, -1,
-                        models.translationQueryFailed ? PlayerAppearance.StatusIcon.ERROR
-                                : PlayerAppearance.StatusIcon.WORKING);
-                continue;
-            }
+                    : "Đích";
+            renderMlKitLanguage(models, language, role, translationKnown, translationAvailable);
+        }
+        addModelDisclosure("Ngôn ngữ khác", otherTranslationLanguagesExpanded, () -> {
+            otherTranslationLanguagesExpanded = !otherTranslationLanguagesExpanded;
+            renderModels();
+        });
+        if (!otherTranslationLanguagesExpanded) return;
+
+        Set<String> otherLanguages = new LinkedHashSet<>(Arrays.asList("zh", "ja", "en", "vi", "ko"));
+        otherLanguages.addAll(models.downloadedTranslations);
+        otherLanguages.addAll(models.translation.keySet());
+        otherLanguages.removeAll(activeLanguages);
+        List<String> ordered = new ArrayList<>(otherLanguages);
+        ordered.sort(java.util.Comparator
+                .comparing((String language) -> !models.downloadedTranslations.contains(language))
+                .thenComparing(MainActivity::languageName, String.CASE_INSENSITIVE_ORDER));
+        for (String language : ordered) {
+            renderMlKitLanguage(models, language, "", translationKnown, translationAvailable);
+        }
+    }
+
+    private android.view.MenuItem addModelMenuItem(PopupMenu popup, CharSequence label, int icon,
+                                                   PlayerAppearance.IconRole role) {
+        android.view.MenuItem item = popup.getMenu().add(label);
+        if (android.os.Build.VERSION.SDK_INT >= 29) {
+            popup.setForceShowIcon(true);
+            item.setIcon(icon).setIconTintList(role.tint(this));
+        }
+        return item;
+    }
+
+    private void addModelDisclosure(String label, boolean expanded, Runnable toggle) {
+        Button button = compactButton(modelForm, label + (expanded ? " ▾" : " ▸"), toggle);
+        setLeadingIcon(button, R.drawable.ic_control_download);
+        button.setMinimumHeight(dp(48));
+        button.setContentDescription(label + (expanded ? ", đang mở" : ", đang thu gọn"));
+    }
+
+    private void renderMlKitLanguage(OfflineModels models, String language, String role,
+                                     boolean translationKnown, boolean translationAvailable) {
+        if (TranslateLanguage.ENGLISH.equals(language)) {
+            modelRowDetails(language, "Có sẵn", role, -1, PlayerAppearance.StatusIcon.SUCCESS);
+        } else if (!translationKnown) {
+            modelRowDetails(language, models.translationQueryFailed ? "Chưa rõ trạng thái" : "Đang kiểm tra…",
+                    role, -1, models.translationQueryFailed ? PlayerAppearance.StatusIcon.ERROR
+                            : PlayerAppearance.StatusIcon.WORKING);
+        } else {
             modelRow(language, role, models.downloadedTranslations.contains(language), false,
                     models.translation.get(language), -1, translationAvailable, -1,
                     () -> models.downloadTranslations(Collections.singletonList(language)),
@@ -3549,11 +4086,16 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private String contextDownloadAction(OfflineModels models) {
+        if (models.contextPending() && models.contextImporting) return "Dừng nhập";
         if (models.contextPending()) return "Hủy tải";
         return models.contextual.partialBytes() > 0 ? "Tiếp tục tải" : "Tải Qwen";
     }
 
     private String contextDownloadStatus(OfflineModels models) {
+        if (models.contextPending() && models.contextImporting) {
+            if (models.contextCancelling()) return "Đang dừng nhập Qwen.";
+            return "Đang nhập Qwen · " + storageSize(models.contextBytes);
+        }
         if (models.contextCancelling()) return "Đang hủy tải Qwen…";
         if (models.contextPending()) {
             String total = models.contextTotal > 0 ? storageSize(models.contextTotal) : "khoảng 2,5 GB";
@@ -3567,7 +4109,14 @@ public final class MainActivity extends ComponentActivity {
 
     private void modelRow(String language, String role, boolean downloaded, boolean bundled, OfflineModels.Operation operation,
                           int percent, boolean enabled, long bytes, Runnable download, Runnable delete) {
-        String name = languageName(language);
+        modelRow(language, role, downloaded, bundled, operation, percent, enabled, bytes, download, delete, null, null);
+    }
+
+    private void modelRow(String language, String role, boolean downloaded, boolean bundled, OfflineModels.Operation operation,
+                          int percent, boolean enabled, long bytes, Runnable download, Runnable delete, Runnable reinstall,
+                          String exportModel) {
+        boolean contextual = "qwen".equals(exportModel);
+        String name = contextual ? ContextModelStore.NAME : languageName(language);
         String spaceError = modelTab == ModelTab.RECOGNITION
                 ? work.models.recognitionSpaceErrors.get(language) : null;
         String status = downloaded ? "Đã tải" : bundled ? "Có sẵn trong ứng dụng" : "Chưa tải";
@@ -3594,7 +4143,10 @@ public final class MainActivity extends ComponentActivity {
                     break;
             }
         }
-        LinearLayout row = modelRowDetails(language, status, role, downloaded ? bytes : -1, icon);
+        LinearLayout row = contextual
+                ? modelRowDetails(name, status, role, downloaded ? bytes : -1, icon,
+                        "Qwen · Dịch theo ngữ cảnh", null, false)
+                : modelRowDetails(language, status, role, downloaded ? bytes : -1, icon);
         if ((bundled && !downloaded) || operation == OfflineModels.Operation.DOWNLOADING
                 || operation == OfflineModels.Operation.DELETING) return;
         boolean retry = operation == OfflineModels.Operation.DOWNLOAD_FAILED;
@@ -3615,7 +4167,22 @@ public final class MainActivity extends ComponentActivity {
         menu.setOnClickListener(anchor -> {
             PopupMenu popup = new PopupMenu(new ContextThemeWrapper(this, R.style.PlayerMenuTheme),
                     anchor, Gravity.END);
-            popup.getMenu().add(PlayerAppearance.dangerLabel(this, "Xóa model")).setOnMenuItemClickListener(item -> {
+            if (reinstall != null) {
+                addModelMenuItem(popup, "Cài lại từ tệp", R.drawable.ic_control_download,
+                        PlayerAppearance.IconRole.MODEL).setOnMenuItemClickListener(item -> {
+                    if (!session.busy) reinstall.run();
+                    return true;
+                });
+            }
+            if (exportModel != null) {
+                addModelMenuItem(popup, "Xuất model", android.R.drawable.ic_menu_save,
+                        PlayerAppearance.IconRole.MODEL).setOnMenuItemClickListener(item -> {
+                    pickModelExport(exportModel);
+                    return true;
+                });
+            }
+            addModelMenuItem(popup, PlayerAppearance.dangerLabel(this, "Xóa model"),
+                    R.drawable.ic_control_delete, PlayerAppearance.IconRole.DELETE).setOnMenuItemClickListener(item -> {
                 if (session.busy) return true;
                 new PlayerAppearance.DialogBuilder(this, settings)
                         .positiveRole(PlayerAppearance.ButtonRole.CONFIRM_DELETE)
@@ -3637,8 +4204,16 @@ public final class MainActivity extends ComponentActivity {
 
     private LinearLayout modelRowDetails(String language, String status, String role, long installedBytes,
                                          PlayerAppearance.StatusIcon icon) {
-        String name = languageName(language);
         boolean recognition = modelTab == ModelTab.RECOGNITION;
+        String engine = recognition ? "Vosk · Tạo transcript" : "ML Kit · Dịch offline";
+        String downloadPackage = recognition ? VoskModelStore.downloadPackage(language) : null;
+        return modelRowDetails(languageName(language), status, role, installedBytes, icon, engine,
+                downloadPackage, recognition || !TranslateLanguage.ENGLISH.equals(language));
+    }
+
+    private LinearLayout modelRowDetails(String name, String status, String role, long installedBytes,
+                                         PlayerAppearance.StatusIcon icon, String engine,
+                                         String downloadPackage, boolean showUnknownSize) {
         String summary = role.isEmpty() ? status : status + " · " + role;
         LinearLayout row = new LinearLayout(this);
         row.setGravity(Gravity.CENTER_VERTICAL);
@@ -3651,12 +4226,14 @@ public final class MainActivity extends ComponentActivity {
         title.setTextSize(settings.textSize(16));
         details.addView(title);
         TextView description = new TextView(this);
-        description.setText(summary);
+        boolean inlineSize = installedBytes >= 0 && !showUnknownSize;
+        description.setText(inlineSize ? status + " · " + storageSize(installedBytes)
+                + (role.isEmpty() ? "" : " · " + role) : summary);
         description.setTextSize(settings.textSize(13));
         description.setCompoundDrawablePadding(dp(4));
         icon.apply(description);
         details.addView(description);
-        if (installedBytes >= 0) {
+        if (installedBytes >= 0 && !inlineSize) {
             TextView size = new TextView(this);
             size.setTextSize(settings.textSize(13));
             size.setText(storageSize(installedBytes));
@@ -3667,12 +4244,11 @@ public final class MainActivity extends ComponentActivity {
         details.setMinimumHeight(dp(48));
         details.setGravity(Gravity.CENTER_VERTICAL);
         details.setOnClickListener(view -> {
-            String message = (recognition ? "Vosk · Tạo transcript" : "ML Kit · Dịch offline")
-                    + "\n" + summary;
-            if (recognition) message += "\nGói tải: " + VoskModelStore.downloadPackage(language);
+            String message = engine + "\n" + summary;
+            if (downloadPackage != null) message += "\nGói tải: " + downloadPackage;
             if (installedBytes >= 0) {
                 message += "\nDung lượng đã cài: " + storageSize(installedBytes);
-            } else if (!TranslateLanguage.ENGLISH.equals(language) || recognition) {
+            } else if (showUnknownSize) {
                 message += "\nChưa đo được dung lượng";
             }
             new PlayerAppearance.DialogBuilder(this, settings)
@@ -4012,7 +4588,7 @@ public final class MainActivity extends ComponentActivity {
                     voice.getProgress() / 100f, AppSettings.voice(this, "vi"));
         });
         voiceGroup.addView(previewStatus);
-        Button reset = audioTextButton(form, "Khôi phục mặc định", () -> {
+        Button reset = settingsActionButton(form, "Khôi phục mặc định", () -> {
             video.setProgress(AppSettings.DEFAULT_SOURCE_VOLUME);
             voice.setProgress(AppSettings.DEFAULT_DUBBING_VOLUME);
         });
@@ -4121,23 +4697,28 @@ public final class MainActivity extends ComponentActivity {
         transcriptPanel.setBackgroundColor(PlayerAppearance.color(this, android.R.attr.colorBackgroundFloating));
         root.addView(transcriptPanel, new LinearLayout.LayoutParams(-1, 0, 1));
         transcriptPanel.setVisibility(View.GONE);
-        LinearLayout toolbar = row(transcriptPanel);
-        followButton = iconButton(toolbar, R.drawable.ic_control_follow, "Về câu đang phát", false,
+        transcriptToolbar = row(transcriptPanel);
+        transcriptToolbar.setGravity(Gravity.CENTER_VERTICAL);
+        transcriptToolbar.setBaselineAligned(false);
+        followButton = iconButton(transcriptToolbar, R.drawable.ic_control_follow, "Về câu đang phát", false,
                 this::resumeFollowing);
-        followButton.setVisibility(View.GONE);
-        transcriptMissing = button(row(transcriptPanel), "Câu chưa dịch", this::retryMissingTranslations);
+        transcriptTranslationStatus = new TextView(this);
+        transcriptTranslationStatus.setTextSize(settings.textSize(12));
+        transcriptTranslationStatus.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        transcriptToolbar.addView(transcriptTranslationStatus, new LinearLayout.LayoutParams(0, -2, 1));
+        transcriptTranslationStatus.setVisibility(View.GONE);
+        transcriptMissing = compactButton(transcriptToolbar, "Dịch tiếp", this::retryMissingTranslations);
+        transcriptMissing.setVisibility(View.GONE);
+        updateTranscriptToolbarVisibility();
         cueList = new ListView(this);
         cueAdapter = new CueAdapter();
         cueList.setAdapter(cueAdapter);
-        cueList.setOnItemClickListener((parent, view, position, id) ->
-                player.seekTo(cueAdapter.startTime(position)));
-        cueList.setOnItemLongClickListener((parent, view, position, id) -> editTranscriptRow(position));
         cueList.setOnScrollListener(new AbsListView.OnScrollListener() {
             @Override
             public void onScrollStateChanged(AbsListView view, int state) {
                 if (state == SCROLL_STATE_TOUCH_SCROLL) {
                     follow = false;
-                    followButton.setVisibility(View.VISIBLE);
+                    updateTranscriptToolbarVisibility();
                 }
             }
 
@@ -4147,17 +4728,50 @@ public final class MainActivity extends ComponentActivity {
         transcriptPanel.addView(cueList, new LinearLayout.LayoutParams(-1, 0, 1));
     }
 
+    private void selectTranscriptRow(int position) {
+        selectedTranscriptRow = position;
+        player.seekTo(cueAdapter.startTime(position));
+        cueAdapter.notifyDataSetChanged();
+    }
+
     private void resumeFollowing() {
         follow = true;
-        followButton.setVisibility(View.GONE);
+        selectedTranscriptRow = -1;
+        cueAdapter.notifyDataSetChanged();
+        updateTranscriptToolbarVisibility();
         if (activeRow >= 0) cueList.setSelection(activeRow);
     }
 
+    private void updateTranscriptToolbarVisibility() {
+        followButton.setVisibility(follow ? View.GONE : View.VISIBLE);
+        transcriptToolbar.setVisibility(!follow || transcriptMissing.getVisibility() == View.VISIBLE
+                ? View.VISIBLE : View.GONE);
+    }
+
     private void refreshTranscript() {
-        int missing = session.missingTranslations();
-        transcriptMissing.setVisibility(session.hasTranslationToRetry() ? View.VISIBLE : View.GONE);
+        int untranslated = 0;
+        int review = 0;
+        if (session.targetLanguage != null) {
+            for (TranscriptCue cue : session.cues) {
+                if (!cue.hasTranslation()) untranslated++;
+                else if (session.needsTranslation(cue)) review++;
+            }
+        }
+        boolean interrupted = session.failedTask() == VideoSession.Task.TRANSLATION;
+        boolean hasWork = interrupted || untranslated > 0 || review > 0;
+        transcriptMissing.setVisibility(hasWork ? View.VISIBLE : View.GONE);
         transcriptMissing.setEnabled(!session.busy);
-        transcriptMissing.setText(missing > 0 ? "Chưa dịch " + missing + " câu" : "Dịch tiếp");
+        List<String> labels = new ArrayList<>(3);
+        if (interrupted) labels.add("Dịch bị gián đoạn");
+        if (untranslated > 0) labels.add(untranslated + " câu chưa dịch");
+        if (review > 0) labels.add(review + " câu cần rà soát");
+        String summary = String.join(" · ", labels);
+        if (!summary.contentEquals(transcriptTranslationStatus.getText())) {
+            transcriptTranslationStatus.setText(summary);
+        }
+        transcriptTranslationStatus.setVisibility(summary.isEmpty() ? View.GONE : View.VISIBLE);
+        missingTranslationNotice.setText(summary);
+        updateTranscriptToolbarVisibility();
         cueAdapter.notifyDataSetChanged();
         markVisibleResult();
     }
@@ -4249,10 +4863,24 @@ public final class MainActivity extends ComponentActivity {
 
         @Override
         public View getView(int position, View recycled, ViewGroup parent) {
-            TextView view = recycled == null ? new TextView(MainActivity.this) : (TextView) recycled;
+            LinearLayout row = (LinearLayout) recycled;
+            if (row == null) {
+                row = new LinearLayout(MainActivity.this);
+                row.setGravity(Gravity.CENTER_VERTICAL);
+                row.addView(new TextView(MainActivity.this), new LinearLayout.LayoutParams(0, -2, 1));
+                Button more = compactButton(row, "⋮", null);
+                PlayerAppearance.styleButton(more, PlayerAppearance.ButtonRole.UTILITY, settings);
+                more.setLayoutParams(new LinearLayout.LayoutParams(dp(48), -2));
+            }
+            TextView view = (TextView) row.getChildAt(0);
+            Button more = (Button) row.getChildAt(1);
             boolean active = position == activeRow;
             TranscriptCue cue = getItem(position);
-            String line = cue.hasTranslation() ? cue.sourceText + "\n" + cue.targetText : cue.sourceText;
+            String line = cue.sourceText;
+            if (cue.hasTranslation()) {
+                String state = session.contextualTranslation() && cue.translationPending ? "Chờ hiệu đính · " : "";
+                line += "\n" + state + cue.targetText;
+            }
             view.setTextSize(settings.textSize(12));
             view.setPadding(dp(8), dp(8), dp(8), dp(8));
             String timestamp = (active ? "Đang phát · " : "") + TranscriptParser.formatTime(startTime(position));
@@ -4261,9 +4889,22 @@ public final class MainActivity extends ComponentActivity {
                     0, timestamp.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             view.setText(content);
             view.setTypeface(null, active ? Typeface.BOLD : Typeface.NORMAL);
-            view.setBackgroundColor(active
+            row.setBackgroundColor(active || position == selectedTranscriptRow
                     ? PlayerAppearance.color(MainActivity.this, R.attr.playerSelection) : Color.TRANSPARENT);
-            return view;
+            boolean showMenu = !session.busy && (selectedTranscriptRow >= 0
+                    ? position == selectedTranscriptRow : active);
+            more.setVisibility(showMenu ? View.VISIBLE : View.GONE);
+            more.setContentDescription("Chỉnh câu tại " + TranscriptParser.formatTime(cue.startMs));
+            more.setOnClickListener(v -> {
+                if (isCurrentSentence(position, cue)) editTranscriptRow(position);
+            });
+            row.setOnClickListener(v -> {
+                if (position < session.cues.size() && session.cues.get(position) == cue) {
+                    selectTranscriptRow(position);
+                }
+            });
+            row.setOnLongClickListener(v -> isCurrentSentence(position, cue) && editTranscriptRow(position));
+            return row;
         }
     }
 
@@ -4354,6 +4995,14 @@ public final class MainActivity extends ComponentActivity {
         }
         boolean showMessage = status.length() > 0 && (!hasVideo || busy || controlsAreVisible());
         status.setVisibility(showMessage ? View.VISIBLE : View.GONE);
+        LinearLayout.LayoutParams progressParams = (LinearLayout.LayoutParams) progress.getLayoutParams();
+        int progressWidth = showMessage ? dp(64) : 0;
+        float progressWeight = showMessage ? 0f : 1f;
+        if (progressParams.width != progressWidth || progressParams.weight != progressWeight) {
+            progressParams.width = progressWidth;
+            progressParams.weight = progressWeight;
+            progress.setLayoutParams(progressParams);
+        }
         boolean landscapeDetails = showMessage && !busy && orientation == Configuration.ORIENTATION_LANDSCAPE;
         boolean lowSpace = showMessage && !busy && StorageSpace.isLowSpace(status.getText().toString());
         statusDetails.setVisibility(landscapeDetails ? View.VISIBLE : View.GONE);
@@ -4371,12 +5020,28 @@ public final class MainActivity extends ComponentActivity {
     private void showPlaybackControls() {
         if (!hasVideo || destroyed) return;
         playerView.showController();
+        setCenterControlsVisible(true);
         updateChromeVisibility();
         scheduleControlHide();
     }
 
     private void hidePlaybackControls() {
-        if (canHideControls()) playerView.hideController();
+        if (!canHideControls()) return;
+        if (keepsPlaybackBarVisible() && centerPlaybackControls != null) {
+            setCenterControlsVisible(false);
+        } else {
+            playerView.hideController();
+        }
+    }
+
+    private void setCenterControlsVisible(boolean visible) {
+        int visibility = visible ? View.VISIBLE : View.INVISIBLE;
+        if (centerPlaybackControls != null) centerPlaybackControls.setVisibility(visibility);
+        if (playbackControlsScrim != null) playbackControlsScrim.setVisibility(visibility);
+    }
+
+    private boolean keepsPlaybackBarVisible() {
+        return transcriptPanel.isShown() || (!fullscreen && orientation != Configuration.ORIENTATION_LANDSCAPE);
     }
 
     private void scheduleControlHide() {
@@ -4387,7 +5052,7 @@ public final class MainActivity extends ComponentActivity {
     private boolean canHideControls() {
         AccessibilityManager accessibility = getSystemService(AccessibilityManager.class);
         return started && hasVideo && player.isPlaying() && hasWindowFocus()
-                && settingsScreen == null && !touchingControls && !transcriptPanel.isShown()
+                && settingsScreen == null && !touchingControls
                 && (accessibility == null || !accessibility.isTouchExplorationEnabled());
     }
 
@@ -4459,6 +5124,14 @@ public final class MainActivity extends ComponentActivity {
         refreshStatusVisibility();
     }
 
+    private void updateTranslationNoticeVisibility() {
+        boolean showMissing = !transcriptPanel.isShown() && !session.busy && missingTranslationNotice.length() > 0
+                && skippedTranslationVersion != session.transcriptVersion();
+        missingTranslationNotice.setVisibility(showMissing ? View.VISIBLE : View.GONE);
+        repairMissingTranslation.setVisibility(showMissing ? View.VISIBLE : View.GONE);
+        skipMissingTranslation.setVisibility(showMissing ? View.VISIBLE : View.GONE);
+    }
+
     private void updateControls(String message) {
         boolean hasCues = !session.cues.isEmpty();
         refreshTranscript();
@@ -4473,18 +5146,12 @@ public final class MainActivity extends ComponentActivity {
         }
         empty.setVisibility(hasVideo ? View.GONE : View.VISIBLE);
         updateHomeTask();
-        int missing = busy ? 0 : session.missingTranslations();
         primary.setEnabled(hasCues || !session.tracks.isEmpty());
-        boolean showMissing = !busy && session.hasTranslationToRetry()
-                && skippedTranslationVersion != session.transcriptVersion();
-        missingTranslationNotice.setVisibility(showMissing ? View.VISIBLE : View.GONE);
-        if (showMissing) {
-            missingTranslationNotice.setText(session.failedTask() == VideoSession.Task.TRANSLATION
-                    ? "Lần dịch gần nhất bị gián đoạn." : "Còn " + missing + " câu chưa được dịch.");
-        }
-        repairMissingTranslation.setVisibility(showMissing ? View.VISIBLE : View.GONE);
-        skipMissingTranslation.setVisibility(showMissing ? View.VISIBLE : View.GONE);
-        setLeadingIcon(primary, hasCues ? R.drawable.ic_control_translate : R.drawable.ic_control_generate);
+        updateTranslationNoticeVisibility();
+        PlayerAppearance.setLeadingIcon(primary,
+                hasCues ? R.drawable.ic_control_translate : R.drawable.ic_control_generate,
+                PlayerAppearance.primaryIconTint(this, PlayerAppearance.IconRole.TRANSCRIPT), 0);
+        primary.setCompoundDrawablePadding(dp(8));
         primary.setText(hasCues ? (translated ? "Dịch lại" : "Dịch") : "Tạo transcript theo câu");
         cancel.setVisibility(busy ? View.VISIBLE : View.GONE);
         progress.setVisibility(busy ? View.VISIBLE : View.GONE);
@@ -4599,6 +5266,7 @@ public final class MainActivity extends ComponentActivity {
     protected void onStart() {
         super.onStart();
         started = true;
+        home.setPerformanceSamplingAllowed(settingsScreen == null);
         if (hasVideo) updateControls(work.status());
         else updateHomeTask();
         showTranscriptReview();
@@ -4616,6 +5284,7 @@ public final class MainActivity extends ComponentActivity {
         if (videoDownloads != null) videoDownloads.closeWebSearch();
         if (telegramContent != null) telegramContent.stopInlinePlayback();
         started = false;
+        home.setPerformanceSamplingAllowed(false);
         cancelDecoderRetry();
         main.removeCallbacks(tick);
         main.removeCallbacks(contextClock);
@@ -4625,15 +5294,6 @@ public final class MainActivity extends ComponentActivity {
         if (audioPreview != null) audioPreview.stop();
         savePlaybackSession();
         super.onStop();
-    }
-
-    @Override
-    public Object onRetainCustomNonConfigurationInstance() {
-        TdJsonTelegramSessionClient client = telegramSession instanceof TdJsonTelegramSessionClient
-                && videoDownloads.usesTelegramSession(telegramSession)
-                ? (TdJsonTelegramSessionClient) telegramSession : null;
-        retainedDownload = new RetainedDownload(videoDownloads, client);
-        return retainedDownload;
     }
 
     @Override
@@ -4649,14 +5309,22 @@ public final class MainActivity extends ComponentActivity {
         work.detach(workObserver);
         sessionStore.close();
         storageIo.shutdownNow();
-        if (retainedDownload != null) videoDownloads.detach();
-        else videoDownloads.close();
+        if (isChangingConfigurations()) {
+            if (telegramSession instanceof TdJsonTelegramSessionClient
+                    && videoDownloads.usesTelegramSession(telegramSession)) {
+                downloadState.detachedTelegram = (TdJsonTelegramSessionClient) telegramSession;
+            }
+            videoDownloads.detach();
+            downloadState.detachedFlow = videoDownloads;
+        } else {
+            videoDownloads.close();
+        }
         savedVideosDialog.close();
         home.close();
         speech.close();
         if (telegramSession instanceof TdJsonTelegramSessionClient) {
             TdJsonTelegramSessionClient client = (TdJsonTelegramSessionClient) telegramSession;
-            if (retainedDownload != null && retainedDownload.telegram == client) client.detachListener();
+            if (downloadState.detachedTelegram == client) client.detachListener();
             else client.closeTransport();
         }
         super.onDestroy();

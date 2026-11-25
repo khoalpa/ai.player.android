@@ -81,7 +81,11 @@ final class OpenSourceSheet extends Dialog {
         params.topMargin = dp(PlayerAppearance.CONTROL_GAP_DP);
         content.addView(button, params);
         if (icon != 0) {
-            button.setCompoundDrawablesRelativeWithIntrinsicBounds(icon, 0, 0, 0);
+            PlayerAppearance.IconRole role = icon == R.drawable.ic_control_download
+                    ? PlayerAppearance.IconRole.VIDEO : PlayerAppearance.iconRole(icon);
+            PlayerAppearance.setLeadingIcon(button, icon, primary
+                    ? PlayerAppearance.primaryIconTint(button.getContext(), role)
+                    : role.tint(button.getContext()), 0);
             button.setCompoundDrawablePadding(dp(12));
             button.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
         }

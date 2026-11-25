@@ -108,6 +108,30 @@ final class VideoSession {
     String contextStep;
     long contextStepStartedAt;
     int progressCompleted;
+    private QwenRun lastQwenRun;
+
+    static final class QwenRun {
+        final String processor;
+        final long elapsedMs;
+        final int cues;
+
+        QwenRun(String processor, long elapsedMs, int cues) {
+            this.processor = processor;
+            this.elapsedMs = elapsedMs;
+            this.cues = cues;
+        }
+    }
+
+    QwenRun lastQwenRun() {
+        return lastQwenRun;
+    }
+
+    private void recordQwenRun(long startedAt, int count) {
+        String processor = translator.processorLabel();
+        if (!processor.isEmpty() && count > 0) {
+            lastQwenRun = new QwenRun(processor, SystemClock.elapsedRealtime() - startedAt, count);
+        }
+    }
 
     VideoSession(Context context, Consumer<String> changed, OfflineModels models) {
         this.context = context.getApplicationContext();
@@ -374,6 +398,7 @@ final class VideoSession {
                 if (old.hasTranslation()) {
                     fresh.setTranslation(old.targetText, old.translationOrigin);
                     fresh.translationNeedsReview = old.translationNeedsReview;
+                    fresh.translatedDirectly = old.translatedDirectly;
                     fresh.translationPending = old.translationPending;
                 }
                 matched = true;
@@ -492,9 +517,16 @@ final class VideoSession {
         if (targetLanguage == null) return 0;
         int missing = 0;
         for (TranscriptCue cue : cues) {
-            if (!cue.hasTranslation()) missing++;
+            if (needsTranslation(cue)) missing++;
         }
         return missing;
+    }
+
+    boolean needsTranslation(TranscriptCue cue) {
+        return !cue.hasTranslation() || (contextualTranslation && "vi".equals(targetLanguage)
+                && cue.translationOrigin == TranscriptCue.TranslationOrigin.AUTOMATIC
+                && (cue.translationPending || !VietnameseTranslationQuality.accepts(
+                        cue.sourceText, cue.targetText, translationGlossary)));
     }
 
     void translate(String target, String configuredSource) {
@@ -503,6 +535,10 @@ final class VideoSession {
 
     void retranslate(String target, String configuredSource, boolean replace) {
         translate(target, configuredSource, null, null, replace, null, null, null, null, 0);
+    }
+
+    void translateWithM2m(String target, String configuredSource, boolean replace) {
+        translate(target, configuredSource, null, null, replace, null, null, null, null, 0, true);
     }
 
     void translateInContext(TranscriptCue selected, String editedSource, String glossary, boolean replace,
@@ -570,7 +606,7 @@ final class VideoSession {
         return true;
     }
 
-    void repairTranslation(TranscriptCue cue, String text, String source) {
+    void repairTranslation(TranscriptCue cue, String text, String source, boolean useM2m) {
         if (!canEditTranslation(cue) || text.trim().isEmpty()) return;
         if (!text.equals(cue.sourceText)) {
             cue.sourceText = text;
@@ -579,7 +615,7 @@ final class VideoSession {
             cue.syncTranslationAfterSourceEdit();
             transcriptVersion++;
         }
-        translate(targetLanguage, source, cue, null);
+        translate(targetLanguage, source, cue, null, false, null, null, null, null, 0, useM2m);
     }
 
     private void translate(String target, String configuredSource, TranscriptCue selected, Runnable onFinished) {
@@ -590,7 +626,15 @@ final class VideoSession {
                            Runnable onFinished, boolean retranslate, ContextModelStore contextModel,
                            String glossary, java.util.function.BiConsumer<List<String>, Consumer<Boolean>> preview,
                            String editedSource, long playbackPositionMs) {
-        if (contextModel == null && OfflineModels.pending(models.translation)) {
+        translate(target, configuredSource, selected, onFinished, retranslate, contextModel, glossary,
+                preview, editedSource, playbackPositionMs, false);
+    }
+
+    private void translate(String target, String configuredSource, TranscriptCue selected,
+                           Runnable onFinished, boolean retranslate, ContextModelStore contextModel,
+                           String glossary, java.util.function.BiConsumer<List<String>, Consumer<Boolean>> preview,
+                           String editedSource, long playbackPositionMs, boolean useM2m) {
+        if (!useM2m && contextModel == null && OfflineModels.pending(models.translation)) {
             changed.accept("Đang quản lý model dịch. Hãy đợi thao tác hoàn tất.");
             return;
         }
@@ -604,7 +648,13 @@ final class VideoSession {
 
         translationModelUnavailable = false;
         boolean inContext = contextModel != null;
-        TranslationBatch batch = new TranslationBatch(cues, targetLanguage, target, selected, retranslate);
+        TranslationBatch batch = new TranslationBatch(cues, targetLanguage, target, selected, retranslate,
+                cue -> target.equals(targetLanguage)
+                        && cue.translationOrigin == TranscriptCue.TranslationOrigin.AUTOMATIC
+                        && ((!cue.translatedDirectly
+                                && (useM2m || inContext || TranslationClient.requiresDirect(settings.sourceLanguage, target)
+                                        || "auto".equals(settings.sourceLanguage)))
+                                || (inContext && !VietnameseTranslationQuality.accepts(cue.sourceText, cue.targetText, glossary))));
         List<TranscriptCue> input = batch.input;
         if (inContext && selected == null) {
             if (targetLanguage != null && !target.equals(targetLanguage)
@@ -636,8 +686,11 @@ final class VideoSession {
             failedTarget = target;
             transcriptVersion++;
         }
-        ContextTranslationClient contextual = contextModel == null ? null : new ContextTranslationClient(contextModel, glossary);
-        translator = new TranslationClient(contextual);
+        ContextTranslationClient contextual = contextModel == null ? null
+                : new ContextTranslationClient(contextModel, glossary, settings.qwenProcessor);
+        translator = new TranslationClient(contextual, models.contextual);
+        if (useM2m) translator.useM2m(models.m2m);
+        long startedAt = SystemClock.elapsedRealtime();
         runningTask = Task.TRANSLATION;
         translationTaskTarget = target;
         changed.accept("Đang chuẩn bị model dịch…");
@@ -652,6 +705,7 @@ final class VideoSession {
             public void onTranslated(int index, String text) {
                 if (request != revision || text == null || text.trim().isEmpty()) return;
                 batch.accept(index, text);
+                input.get(index).translatedDirectly = true;
                 targetLanguage = target;
                 transcriptVersion++;
             }
@@ -661,14 +715,16 @@ final class VideoSession {
                 if (request != revision) return;
                 progressCompleted = completed;
                 progressTotal = total;
-                changed.accept(inContext ? "Đang hiệu đính · " + completed + "/" + total + " câu"
-                        : "Đang dịch " + completed + "/" + total);
+                String label = inContext ? "Hiệu đính · Đã xử lý " + completed + "/" + total + " câu"
+                        : "Đang dịch " + completed + "/" + total;
+                changed.accept(label + translator.processorStatus());
             }
 
             @Override
             public void onFinished(int count, String status) {
                 if (request != revision) return;
                 contextStep = null;
+                if (preview == null) recordQwenRun(startedAt, count);
                 closeDraftTranslator();
                 translator.close();
                 translator = null;
@@ -677,8 +733,12 @@ final class VideoSession {
                 boolean complete = target.equals(targetLanguage) && missingTranslations() == 0;
                 boolean pending = cues.stream().anyMatch(cue -> cue.translationPending);
                 if (selected == null && count < input.size()) {
-                    status = "Dịch bị gián đoạn · Đã dịch " + count + "/" + input.size()
-                            + " câu trong lần này. " + status;
+                    if (inContext) {
+                        if (count > 0) status += " Đã xử lý " + count + "/" + input.size() + " câu.";
+                    } else {
+                        status = "Dịch bị gián đoạn · Đã dịch " + count + "/" + input.size()
+                                + " câu trong lần này. " + status;
+                    }
                 } else if (complete && !pending && target.equals(failedTarget)) {
                     failedTask = null;
                     failedTarget = null;
@@ -695,8 +755,25 @@ final class VideoSession {
             translator.translateCues(settings, input, cues, callback);
             return;
         }
-        if (selected == null && !OfflineModels.pending(models.translation)) {
-            startDraftTranslation(settings, batch, request, playbackPositionMs);
+        java.util.Map<Integer, String> drafts = new java.util.concurrent.ConcurrentHashMap<>();
+        java.util.concurrent.CountDownLatch draftReady = new java.util.concurrent.CountDownLatch(1);
+        if (selected == null) {
+            if (target.equals(targetLanguage)) {
+                for (int i = 0; i < input.size(); i++) {
+                    TranscriptCue cue = input.get(i);
+                    if (cue.translatedDirectly && !cue.translationNeedsReview && VietnameseTranslationQuality.accepts(
+                            cue.sourceText, cue.targetText, glossary)) {
+                        drafts.put(i, cue.targetText);
+                    }
+                }
+            }
+            if ("en".equals(settings.sourceLanguage) && !OfflineModels.pending(models.translation)) {
+                startDraftTranslation(settings, batch, request, playbackPositionMs, drafts, draftReady);
+            } else {
+                draftReady.countDown();
+            }
+        } else {
+            draftReady.countDown();
         }
         List<TranscriptCue> contextCues = cues;
         List<TranscriptCue> contextInput = input;
@@ -709,31 +786,21 @@ final class VideoSession {
         }
         long refinementStartedAt = SystemClock.elapsedRealtime();
         int[] refined = {0};
+        boolean[] refining = {false};
         List<String> appliedRefinements = new ArrayList<>(java.util.Collections.nCopies(input.size(), null));
         contextual.prioritize(playbackPositionMs);
-        contextual.translate(contextCues, contextInput, () -> main.post(() -> {
+        contextual.translate(contextCues, contextInput, retranslate || selected != null, () -> main.post(() -> {
             if (request != revision) return;
             showContextStep("Đang nạp mô hình");
         }), (completed, total) -> main.post(() -> {
             if (request != revision) return;
-            showContextStep("Đang phân tích ngữ cảnh " + completed + "/" + total + " nhóm");
+            showContextStep("Ngữ cảnh · Đã phân tích " + completed + "/" + total + " nhóm" + contextual.processorStatus());
         }), () -> main.post(() -> {
             if (request != revision) return;
-            showContextStep("Đang hiệu đính theo ngữ cảnh video");
-        }), drafts -> main.post(() -> {
-            if (request != revision || selected != null) return;
-            boolean changedDraft = false;
-            for (int i = 0; i < drafts.size(); i++) {
-                String text = drafts.get(i);
-                if (text == null || !batch.acceptDraft(i, text, target.equals(targetLanguage))) continue;
-                targetLanguage = target;
-                transcriptVersion++;
-                changedDraft = true;
-            }
-            if (changedDraft) {
-                showContextStep("Đã có bản nháp. Đang phân tích ngữ cảnh toàn video.");
-            }
-        }), results -> main.post(() -> {
+            refining[0] = true;
+            contextStep = null;
+            callback.onProgress(refined[0], input.size(), 0, 0);
+        }), drafts, draftReady, results -> main.post(() -> {
             if (request != revision) return;
             List<String> applied = appliedRefinements;
             int count = 0;
@@ -744,20 +811,24 @@ final class VideoSession {
                 if (preview == null && !text.equals(applied.get(i))) callback.onTranslated(i, text);
                 applied.set(i, text);
             }
-            if (count == 0) return;
-            contextStep = null;
+            if (count == refined[0]) return;
             if (refined[0] == 0) {
                 android.util.Log.i("ContextTranslation", "first_refined elapsed_ms="
                         + (SystemClock.elapsedRealtime() - refinementStartedAt));
             }
             refined[0] = count;
-            callback.onProgress(count, input.size(), 0, 0);
+            if (refining[0]) callback.onProgress(count, input.size(), 0, 0);
         }))
                 .addOnSuccessListener(results -> {
                     if (request != revision) return;
                     android.util.Log.i("ContextTranslation", "refinement_total elapsed_ms="
                             + (SystemClock.elapsedRealtime() - refinementStartedAt));
-                    if (results.size() != input.size() || results.contains(null)) {
+                    if (results.size() == input.size() && results.contains(null)) {
+                        callback.onFinished(refined[0], "Còn " + (input.size() - refined[0])
+                                + " câu cần kiểm tra. Có thể chọn Dịch tiếp.");
+                        return;
+                    }
+                    if (results.size() != input.size()) {
                         callback.onFinished(0, "Bản dịch theo ngữ cảnh chưa đủ số câu.");
                         return;
                     }
@@ -769,6 +840,7 @@ final class VideoSession {
                         contextual.clearCompleted();
                         return;
                     }
+                    recordQwenRun(startedAt, results.size());
                     preview.accept(results, apply -> {
                         if (request != revision || !busy) return;
                         contextual.clearCompleted();
@@ -791,45 +863,55 @@ final class VideoSession {
     }
 
     private void startDraftTranslation(AppSettings settings, TranslationBatch batch, int request,
-                                       long playbackPositionMs) {
+                                       long playbackPositionMs, java.util.Map<Integer, String> drafts,
+                                       java.util.concurrent.CountDownLatch draftReady) {
         List<Integer> order = new ArrayList<>();
         int first = 0;
         while (first < batch.input.size() && batch.input.get(first).endMs <= playbackPositionMs) first++;
         for (int offset = 0; offset < batch.input.size(); offset++) {
             int index = (first + offset) % batch.input.size();
-            if (!settings.targetLanguage.equals(targetLanguage) || !batch.input.get(index).hasTranslation()) {
+            if (!drafts.containsKey(index)) {
                 order.add(index);
             }
         }
-        if (order.isEmpty()) return;
+        if (order.isEmpty()) {
+            draftReady.countDown();
+            return;
+        }
         List<TranscriptCue> draftInput = new ArrayList<>(order.size());
         for (int index : order) draftInput.add(batch.input.get(index));
         long started = SystemClock.elapsedRealtime();
-        draftTranslator = new TranslationClient();
+        draftTranslator = new TranslationClient(null, models.contextual);
         draftTranslator.translateCues(settings, draftInput, cues, new TranslationClient.Callback() {
             private boolean published;
 
             @Override public void onTranslated(int index, String text) {
                 if (request != revision || !busy) return;
                 int targetIndex = order.get(index);
-                if (!batch.acceptDraft(targetIndex, text, settings.targetLanguage.equals(targetLanguage))) return;
-                targetLanguage = settings.targetLanguage;
-                transcriptVersion++;
+                if (!VietnameseTranslationQuality.accepts(
+                        batch.input.get(targetIndex).sourceText, text, translationGlossary)) return;
+                drafts.put(targetIndex, text);
+                if (batch.acceptDraft(targetIndex, text, settings.targetLanguage.equals(targetLanguage))) {
+                    batch.input.get(targetIndex).translatedDirectly = true;
+                    targetLanguage = settings.targetLanguage;
+                    transcriptVersion++;
+                }
                 if (!published) {
                     published = true;
                     android.util.Log.i("ContextTranslation", "first_draft elapsed_ms="
                             + (SystemClock.elapsedRealtime() - started));
-                    publishDraftProgress();
+                    publishDraftProgress(drafts.size(), batch.input.size());
                 }
             }
 
             @Override public void onProgress(int completed, int total, int cached, int skipped) {
                 if (request == revision && busy && published) {
-                    publishDraftProgress();
+                    publishDraftProgress(drafts.size(), batch.input.size());
                 }
             }
 
             @Override public void onFinished(int count, String status) {
+                draftReady.countDown();
                 if (request == revision) closeDraftTranslator();
             }
         });
@@ -841,10 +923,10 @@ final class VideoSession {
         draftTranslator = null;
     }
 
-    private void publishDraftProgress() {
-        changed.accept(contextStep != null ? contextStep
-                : "Bản dịch theo câu đã sẵn sàng · Đang hiệu đính "
-                + progressCompleted + "/" + progressTotal + " câu");
+    private void publishDraftProgress(int drafted, int total) {
+        String label = "Bản nháp " + drafted + "/" + total + " câu";
+        changed.accept(contextStep != null ? contextStep + " · " + label
+                : "Hiệu đính · Đã xử lý " + progressCompleted + "/" + total + " câu · " + label);
     }
 
     private void showContextStep(String label) {

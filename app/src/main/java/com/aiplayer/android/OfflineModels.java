@@ -24,10 +24,20 @@ final class OfflineModels {
 
     final VoskModelStore vosk;
     final ContextModelStore contextual;
+    final M2mModelStore m2m;
+    boolean m2mDownloading;
+    long m2mBytes;
+    String m2mError;
+    private volatile boolean m2mCancelled;
+    private boolean m2mImporting;
     Operation contextOperation;
     long contextBytes;
     long contextTotal = -1;
     private volatile boolean contextCancelRequested;
+    boolean contextImporting;
+    String voskImportLanguage;
+    String voskImportError;
+    private volatile boolean voskImportCancelled;
     String contextError;
     final Map<String, Operation> recognition = new HashMap<>();
     final Map<String, Operation> translation = new HashMap<>();
@@ -45,6 +55,7 @@ final class OfflineModels {
     OfflineModels(Context context, Runnable changed) {
         vosk = new VoskModelStore(context);
         contextual = new ContextModelStore(context);
+        m2m = new M2mModelStore(context);
         connectivity = context.getSystemService(ConnectivityManager.class);
         this.changed = changed;
     }
@@ -53,7 +64,71 @@ final class OfflineModels {
         return operations.containsValue(Operation.DOWNLOADING) || operations.containsValue(Operation.DELETING);
     }
 
-    boolean pending() { return pending(recognition) || pending(translation) || contextPending(); }
+    boolean pending() { return pending(recognition) || pending(translation) || contextPending() || m2mDownloading; }
+
+    void toggleM2mDownload() {
+        if (m2mDownloading) {
+            m2mCancelled = true;
+            changed.run();
+            return;
+        }
+        if (m2m.installed() || !ContextModelStore.supported()) return;
+        startM2mInstall(null, null);
+    }
+
+    void importM2mFiles(android.content.ContentResolver resolver, List<android.net.Uri> files) {
+        if (m2mDownloading || !ContextModelStore.supported() || files.isEmpty()) return;
+        startM2mInstall(resolver, files);
+    }
+
+    private void startM2mInstall(android.content.ContentResolver resolver, List<android.net.Uri> files) {
+        m2mImporting = files != null;
+        m2mDownloading = true;
+        m2mCancelled = false;
+        m2mError = null;
+        m2mBytes = 0;
+        changed.run();
+        new Thread(() -> {
+            String failure = null;
+            try {
+                ContextModelStore.Progress progress = (bytes, total) -> main.post(() -> {
+                    m2mBytes = bytes;
+                    changed.run();
+                });
+                if (files == null) m2m.install(() -> m2mCancelled, progress);
+                else m2m.importFiles(resolver, files, () -> m2mCancelled, progress);
+            } catch (java.net.UnknownHostException error) {
+                failure = "Mạng hiện tại không phân giải được máy chủ tải model. "
+                        + "Hãy thử Wi-Fi khác hoặc chọn Nhập tệp model.";
+            } catch (Exception error) {
+                failure = error.getMessage() == null ? "Không tải được M2M100." : error.getMessage();
+            }
+            String result = failure;
+            main.post(() -> {
+                m2mError = m2mCancelled ? null : result;
+                m2mDownloading = false;
+                changed.run();
+            });
+        }, "m2m-model-download").start();
+    }
+
+    String m2mStatus() {
+        if (m2mDownloading) return m2mCancelled ? "Đang dừng"
+                : (m2mImporting ? "Đã nhập " : "Đã tải ") + m2mBytes / 1_000_000 + " MB";
+        if (m2m.installed()) return "Đã cài đặt";
+        return m2mError == null ? "Cần tải khoảng 1,15 GB" : m2mError;
+    }
+
+    void deleteM2mModel() {
+        if (m2mDownloading) return;
+        try {
+            m2m.delete();
+            m2mError = null;
+        } catch (java.io.IOException error) {
+            m2mError = "Không xóa được model M2M100.";
+        }
+        changed.run();
+    }
 
     boolean contextPending() { return contextOperation == Operation.DOWNLOADING; }
 
@@ -67,8 +142,18 @@ final class OfflineModels {
 
     void downloadContextModel() {
         if (contextPending() || contextual.installed() || !ContextModelStore.supported()) return;
+        startContextInstall(null, null);
+    }
+
+    void importContextModel(android.content.ContentResolver resolver, android.net.Uri uri) {
+        if (contextPending() || !ContextModelStore.supported()) return;
+        startContextInstall(resolver, uri);
+    }
+
+    private void startContextInstall(android.content.ContentResolver resolver, android.net.Uri uri) {
+        contextImporting = uri != null;
         contextOperation = Operation.DOWNLOADING;
-        contextBytes = contextual.partialBytes();
+        contextBytes = contextImporting ? 0 : contextual.partialBytes();
         contextTotal = -1;
         contextCancelRequested = false;
         contextError = null;
@@ -76,12 +161,14 @@ final class OfflineModels {
         new Thread(() -> {
             String failure = null;
             try {
-                contextual.download(() -> contextCancelRequested, (bytes, total) -> main.post(() -> {
+                ContextModelStore.Progress progress = (bytes, total) -> main.post(() -> {
                     if (contextCancelling()) return;
                     contextBytes = bytes;
                     contextTotal = total;
                     changed.run();
-                }));
+                });
+                if (uri == null) contextual.download(() -> contextCancelRequested, progress);
+                else contextual.importModel(resolver, uri, () -> contextCancelRequested, progress);
             } catch (Exception error) {
                 failure = error.getMessage();
                 if (failure == null) failure = "Không tải được model dịch theo ngữ cảnh.";
@@ -94,6 +181,38 @@ final class OfflineModels {
                 changed.run();
             });
         }, "context-model-download").start();
+    }
+
+    void cancelVoskImport() {
+        voskImportCancelled = true;
+        changed.run();
+    }
+
+    void importVoskModel(String language, android.content.ContentResolver resolver, android.net.Uri uri) {
+        if (pending(recognition)) return;
+        voskImportLanguage = language;
+        voskImportError = null;
+        voskImportCancelled = false;
+        recognitionPercent = -1;
+        recognition.put(language, Operation.DOWNLOADING);
+        changed.run();
+        vosk.importModel(language, resolver, uri, new VoskModelStore.Callback() {
+            @Override public boolean isCancelled() { return voskImportCancelled; }
+            @Override public void onReady(org.vosk.Model model, String source) { model.close(); }
+            @Override public void onStatus(String message) {}
+            @Override public void onError(String message) {}
+            @Override public void onDownloadProgress(int percent) {
+                if (percent % 5 == 0) main.post(() -> {
+                    recognitionPercent = percent;
+                    changed.run();
+                });
+            }
+        }, error -> main.post(() -> {
+            voskImportError = voskImportCancelled ? null : error;
+            voskImportLanguage = null;
+            recognition.remove(language);
+            changed.run();
+        }));
     }
 
     void deleteContextModel() {

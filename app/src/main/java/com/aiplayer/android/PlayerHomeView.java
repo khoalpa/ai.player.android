@@ -30,6 +30,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.function.ToLongFunction;
 
 final class PlayerHomeView extends ScrollView {
@@ -37,6 +38,7 @@ final class PlayerHomeView extends ScrollView {
 
     private final AppSettings settings;
     private final LinearLayout recent;
+    private final DevicePerformanceView performance;
     private final LinearLayout taskSection;
     private final TextView taskHeading;
     private final TextView taskTitle, taskDetail;
@@ -51,7 +53,8 @@ final class PlayerHomeView extends ScrollView {
     private boolean closed;
 
     PlayerHomeView(Context context, AppSettings settings, Runnable open,
-                   Runnable telegram, Consumer<Uri> playRecent, Consumer<Uri> removeRecent) {
+                   Runnable telegram, Consumer<Uri> playRecent, Consumer<Uri> removeRecent,
+                   Supplier<VideoSession.QwenRun> lastQwenRun) {
         super(context);
         this.settings = settings;
         this.playRecent = playRecent;
@@ -103,6 +106,10 @@ final class PlayerHomeView extends ScrollView {
         actionParams.topMargin = dp(PlayerAppearance.CONTROL_GAP_DP);
         taskCard.addView(taskAction, actionParams);
         taskSection.setVisibility(GONE);
+        performance = new DevicePerformanceView(context, settings, lastQwenRun);
+        LinearLayout.LayoutParams performanceParams = new LinearLayout.LayoutParams(-1, -2);
+        performanceParams.topMargin = dp(PlayerAppearance.GROUP_GAP_DP);
+        content.addView(performance, performanceParams);
         addView(content, new FrameLayout.LayoutParams(-1, -2, Gravity.CENTER_HORIZONTAL));
     }
 
@@ -240,7 +247,7 @@ final class PlayerHomeView extends ScrollView {
 
         thumbnail.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
         thumbnail.setImageResource(R.drawable.ic_control_library);
-        thumbnail.setImageTintList(PlayerAppearance.controlIconTint(context));
+        thumbnail.setImageTintList(PlayerAppearance.IconRole.VIDEO.tint(context));
         int generation = previewGeneration;
         previewRequests.add(durations.submit(() -> {
             long durationMs = duration.applyAsLong(video.uri);
@@ -323,8 +330,13 @@ final class PlayerHomeView extends ScrollView {
         }
     }
 
+    void setPerformanceSamplingAllowed(boolean allowed) {
+        performance.setSamplingAllowed(allowed);
+    }
+
     void close() {
         closed = true;
+        performance.close();
         cancelPreviews();
         previews.shutdownNow();
         durations.shutdownNow();
@@ -341,7 +353,11 @@ final class PlayerHomeView extends ScrollView {
         button.setMinimumHeight(dp(52));
         button.setMinHeight(dp(52));
         button.setPaddingRelative(dp(16), dp(8), dp(16), dp(8));
-        button.setCompoundDrawablesRelativeWithIntrinsicBounds(icon, 0, R.drawable.ic_home_chevron, 0);
+        Context context = button.getContext();
+        PlayerAppearance.IconRole iconRole = PlayerAppearance.iconRole(icon);
+        PlayerAppearance.setLeadingIcon(button, icon, role == PlayerAppearance.ButtonRole.PRIMARY
+                ? PlayerAppearance.primaryIconTint(context, iconRole) : iconRole.tint(context),
+                R.drawable.ic_home_chevron);
         button.setCompoundDrawablePadding(dp(14));
         button.setOnClickListener(view -> action.run());
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);

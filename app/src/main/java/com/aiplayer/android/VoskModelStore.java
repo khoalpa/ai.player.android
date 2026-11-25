@@ -179,33 +179,7 @@ final class VoskModelStore {
                         callback.onStatus("Đang tải và giải nén model Vosk " + spec.assetName + ": " + percent + "%");
                     });
                  ZipInputStream zip = new ZipInputStream(raw)) {
-                ZipEntry entry;
-                byte[] buffer = new byte[64 * 1024];
-                while ((entry = zip.getNextEntry()) != null) {
-                    checkCancelled(callback);
-                    String strippedName = stripTopFolder(entry.getName());
-                    if (strippedName.isEmpty()) {
-                        continue;
-                    }
-                    File outFile = ModelArchive.destination(tempDir, strippedName);
-                    if (entry.isDirectory()) {
-                        outFile.mkdirs();
-                        continue;
-                    }
-                    File parent = outFile.getParentFile();
-                    if (parent != null) {
-                        parent.mkdirs();
-                    }
-                    if (entry.getSize() > 0) StorageSpace.require(context, tempDir, entry.getSize());
-                    try (FileOutputStream out = new FileOutputStream(outFile)) {
-                        int read;
-                        while ((read = zip.read(buffer)) != -1) {
-                            checkCancelled(callback);
-                            StorageSpace.require(context, tempDir, read);
-                            out.write(buffer, 0, read);
-                        }
-                    }
-                }
+                extractArchive(zip, tempDir, null, callback);
             }
             checkCancelled(callback);
             if (!isModelReady(tempDir)) throw new IOException("Model archive is incomplete");
@@ -225,6 +199,99 @@ final class VoskModelStore {
             activeConnection = null;
             activeDownload = null;
             if (conn != null) conn.disconnect();
+        }
+    }
+
+    void importModel(String language, android.content.ContentResolver resolver, android.net.Uri uri,
+                     Callback callback, Consumer<String> finished) {
+        ModelSpec spec = specFor(language);
+        File destination = modelDir(spec.assetName);
+        executor.execute(() -> {
+            File staging = new File(destination.getParentFile(), destination.getName() + ".tmp");
+            File backup = new File(destination.getParentFile(), destination.getName() + ".backup");
+            String failure = null;
+            try {
+                checkCancelled(callback);
+                if (backup.exists()) {
+                    if (!destination.exists()) moveModel(backup, destination);
+                    else deleteRecursive(backup);
+                }
+                deleteRecursive(staging);
+                java.nio.file.Files.createDirectories(staging.toPath());
+                String packageName = downloadPackage(language);
+                String root = packageName.substring(0, packageName.length() - 4);
+                try (android.content.res.AssetFileDescriptor descriptor = resolver.openAssetFileDescriptor(uri, "r")) {
+                    if (descriptor == null) throw new IOException("Không đọc được tệp ZIP.");
+                    try (InputStream raw = new ModelDownloadStream(descriptor.createInputStream(),
+                            descriptor.getLength(), callback::isCancelled, callback::onDownloadProgress);
+                         ZipInputStream zip = new ZipInputStream(raw)) {
+                        extractArchive(zip, staging, root, callback);
+                    }
+                }
+                if (!isModelReady(staging)) throw new IOException("Gói Vosk thiếu conf/model.conf.");
+                checkCancelled(callback);
+                Model validated = new Model(staging.getAbsolutePath());
+                validated.close();
+                checkCancelled(callback);
+                if (destination.exists()) moveModel(destination, backup);
+                try {
+                    moveModel(staging, destination);
+                } catch (IOException error) {
+                    if (backup.exists()) {
+                        try {
+                            moveModel(backup, destination);
+                        } catch (IOException restoreError) {
+                            error.addSuppressed(restoreError);
+                        }
+                    }
+                    throw error;
+                }
+                deleteRecursive(backup);
+                deletionVersion++;
+            } catch (Exception error) {
+                failure = error.getMessage() == null ? "Không nhập được model Vosk." : error.getMessage();
+            } finally {
+                deleteRecursive(staging);
+                finished.accept(failure);
+            }
+        });
+    }
+
+    private static void moveModel(File from, File to) throws IOException {
+        java.nio.file.Files.move(from.toPath(), to.toPath(), java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+    }
+
+    private void extractArchive(ZipInputStream zip, File tempDir, String expectedRoot,
+                                Callback callback) throws IOException {
+        ZipEntry entry;
+        byte[] buffer = new byte[64 * 1024];
+        while ((entry = zip.getNextEntry()) != null) {
+            checkCancelled(callback);
+            if (expectedRoot != null && !entry.getName().startsWith(expectedRoot + "/")) {
+                throw new IOException("Hãy chọn gói Vosk đúng phiên bản: " + expectedRoot + ".zip");
+            }
+            String strippedName = stripTopFolder(entry.getName());
+            if (strippedName.isEmpty()) {
+                continue;
+            }
+            File outFile = ModelArchive.destination(tempDir, strippedName);
+            if (entry.isDirectory()) {
+                outFile.mkdirs();
+                continue;
+            }
+            File parent = outFile.getParentFile();
+            if (parent != null) {
+                parent.mkdirs();
+            }
+            if (entry.getSize() > 0) StorageSpace.require(context, tempDir, entry.getSize());
+            try (FileOutputStream out = new FileOutputStream(outFile)) {
+                int read;
+                while ((read = zip.read(buffer)) != -1) {
+                    checkCancelled(callback);
+                    StorageSpace.require(context, tempDir, read);
+                    out.write(buffer, 0, read);
+                }
+            }
         }
     }
 
@@ -248,6 +315,10 @@ final class VoskModelStore {
     static String downloadPackage(String language) {
         String url = specFor(language).url;
         return url.substring(url.lastIndexOf('/') + 1);
+    }
+
+    ModelExport exportModel(String language) throws IOException {
+        return ModelExport.vosk(downloadPackage(language), modelDir(modelKey(language)));
     }
 
     long installedBytes(String language) {

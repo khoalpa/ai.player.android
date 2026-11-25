@@ -4,6 +4,7 @@ import android.app.AlertDialog;
 import android.content.Context;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.graphics.drawable.StateListDrawable;
@@ -23,6 +24,77 @@ final class PlayerAppearance {
 
     enum ButtonRole {
         PRIMARY, SECONDARY, UTILITY, ACCENT, DANGER, CONFIRM_DELETE, VIDEO
+    }
+
+    enum IconRole {
+        VIDEO(R.attr.playerIconVideo),
+        TRANSCRIPT(R.attr.playerIconTranscript),
+        MODEL(R.attr.playerIconModel),
+        NEUTRAL(R.attr.playerIconNeutral),
+        WARNING(R.attr.playerIconWarning),
+        DELETE(R.attr.playerIconDelete);
+
+        private final int colorAttribute;
+
+        IconRole(int colorAttribute) {
+            this.colorAttribute = colorAttribute;
+        }
+
+        int color(Context context) {
+            return PlayerAppearance.color(context, colorAttribute);
+        }
+
+        ColorStateList tint(Context context) {
+            return iconTint(context, color(context));
+        }
+    }
+
+    static IconRole iconRole(int icon) {
+        if (icon == R.drawable.ic_control_open || icon == R.drawable.ic_control_library
+                || icon == R.drawable.ic_control_telegram || icon == R.drawable.ic_home_play) {
+            return IconRole.VIDEO;
+        }
+        if (icon == R.drawable.ic_control_captions || icon == R.drawable.ic_control_transcript
+                || icon == R.drawable.ic_control_generate || icon == R.drawable.ic_control_translate
+                || icon == R.drawable.ic_control_follow) {
+            return IconRole.TRANSCRIPT;
+        }
+        if (icon == R.drawable.ic_control_download) return IconRole.MODEL;
+        if (icon == R.drawable.ic_control_delete) return IconRole.DELETE;
+        return IconRole.NEUTRAL;
+    }
+
+    private static ColorStateList iconTint(Context context, int enabledColor) {
+        return new ColorStateList(new int[][]{DISABLED, DEFAULT},
+                new int[]{color(context, R.attr.playerButtonDisabledInk), enabledColor});
+    }
+
+    static ColorStateList primaryIconTint(Context context, IconRole role) {
+        int attribute;
+        switch (role) {
+            case VIDEO:
+                attribute = R.attr.playerIconVideoOnPrimary;
+                break;
+            case TRANSCRIPT:
+                attribute = R.attr.playerIconTranscriptOnPrimary;
+                break;
+            default:
+                attribute = R.attr.playerAccentText;
+                break;
+        }
+        return iconTint(context, color(context, attribute));
+    }
+
+    static void setLeadingIcon(Button button, int icon, ColorStateList tint, int trailingIcon) {
+        Context context = button.getContext();
+        button.setCompoundDrawableTintList(tint);
+        Drawable leading = context.getDrawable(icon).mutate();
+        Drawable trailing = null;
+        if (trailingIcon != 0) {
+            trailing = context.getDrawable(trailingIcon).mutate();
+            trailing.setColorFilter(IconRole.NEUTRAL.color(context), android.graphics.PorterDuff.Mode.SRC_IN);
+        }
+        button.setCompoundDrawablesRelativeWithIntrinsicBounds(leading, null, trailing, null);
     }
 
     enum StatusIcon {

@@ -18,6 +18,8 @@ def gitHead = gitMetadata(["rev-parse", "--verify", "HEAD"])
 def commit = gitHead != null && gitHead.matches("[0-9a-f]{40}|[0-9a-f]{64}") ? gitHead : ""
 def worktree = commit.isEmpty() ? null : gitMetadata(["status", "--porcelain", "--untracked-files=normal"])
 
+def qwenVulkan = providers.gradleProperty("aiplayerVulkan").orElse("false").get() == "true"
+
 android {
     namespace = "com.aiplayer.android"
     compileSdk = 36
@@ -47,6 +49,7 @@ android {
         externalNativeBuild {
             cmake {
                 abiFilters "arm64-v8a"
+                arguments(qwenVulkan ? "-DGGML_VULKAN=ON" : "-DGGML_VULKAN=OFF")
             }
         }
         applicationId = "com.aiplayer.android"
@@ -58,6 +61,11 @@ android {
         buildConfigField "String", "GIT_COMMIT", '"' + commit + '"'
         buildConfigField "String", "GIT_WORKTREE", worktree == null ? '"unknown"'
                 : worktree.isEmpty() ? '"clean"' : '"dirty"'
+    }
+    buildTypes {
+        release {
+            signingConfig = signingConfigs.debug
+        }
     }
 }
 
@@ -72,6 +80,7 @@ androidComponents {
 dependencies {
     implementation "androidx.activity:activity:1.13.0"
     implementation "com.google.mlkit:translate:17.0.3"
+    implementation "com.microsoft.onnxruntime:onnxruntime-android:1.22.0"
     implementation "org.jsoup:jsoup:1.23.2"
     implementation "com.google.mlkit:language-id:17.0.6"
     implementation "androidx.media3:media3-exoplayer:1.8.0"

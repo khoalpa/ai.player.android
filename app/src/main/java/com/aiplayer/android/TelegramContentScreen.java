@@ -13,6 +13,11 @@ import android.text.InputType;
 import android.text.SpannableString;
 import android.text.style.URLSpan;
 import android.view.View;
+import android.view.Window;
+
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageView;
@@ -1111,10 +1116,12 @@ final class TelegramContentScreen {
             if (inline.fullscreen == dialog) closeFullscreen(inline);
         });
         dialog.show();
-        if (dialog.getWindow() != null) {
-            dialog.getWindow().setLayout(-1, -1);
-            dialog.getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN
-                    | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setLayout(-1, -1);
+            WindowInsetsControllerCompat controller = WindowCompat.getInsetsController(window, window.getDecorView());
+            controller.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+            controller.hide(WindowInsetsCompat.Type.systemBars());
         }
     }
 
@@ -1849,8 +1856,8 @@ final class TelegramContentScreen {
                 address.setOnClickListener(view -> open(link, () -> showHistory(inputDraft)));
                 row.addView(address, new LinearLayout.LayoutParams(0, -2, 1));
                 android.widget.ImageButton remove = new android.widget.ImageButton(activity);
-                remove.setImageResource(android.R.drawable.ic_menu_delete);
-                remove.setColorFilter(PlayerAppearance.color(activity, android.R.attr.textColorPrimary));
+                remove.setImageResource(R.drawable.ic_control_delete);
+                remove.setImageTintList(PlayerAppearance.IconRole.DELETE.tint(activity));
                 remove.setBackgroundColor(android.graphics.Color.TRANSPARENT);
                 remove.setContentDescription("Xóa khỏi lịch sử");
                 remove.setOnClickListener(view -> {

@@ -1,6 +1,8 @@
 # AI Player for Android
 
-AI Player phát video trên Android, tạo transcript từ lời thoại bằng Vosk và đọc phụ đề bằng giọng TextToSpeech của thiết bị. Sau khi tải model, ứng dụng có thể dịch ngoại tuyến bằng ML Kit hoặc dịch sang tiếng Việt theo ngữ cảnh video bằng Qwen.
+AI Player phát video trên Android, tạo transcript theo câu bằng Vosk và đọc lời gốc hoặc bản dịch bằng giọng TextToSpeech của thiết bị. Sau khi cài model, ứng dụng có thể dịch ngoại tuyến theo câu bằng ML Kit, M2M100 hoặc Qwen và dịch sang tiếng Việt theo ngữ cảnh cả video bằng Qwen.
+
+Trong ứng dụng, mở **⋮ → Hướng dẫn** để xem các bước sử dụng và xử lý sự cố.
 
 ## Giao diện ứng dụng
 
@@ -61,31 +63,71 @@ Nếu gặp `INSTALL_FAILED_UPDATE_INCOMPATIBLE`, APK đang cài và APK mới c
 
 ## Transcript, bản dịch và phụ đề
 
+Khi chọn **Tạo transcript theo câu**, mục **Model cho lượt mới** ưu tiên **Vosk Large** nếu đã cài cho ngôn ngữ lời thoại. Nếu chỉ có **Vosk Small**, ứng dụng chọn Small. Có thể đổi model cho từng lượt hoặc cài thêm trong **Cài đặt → Model và giọng đọc → Nhận dạng**.
+
 1. Trong **Cài đặt → Ngôn ngữ và phụ đề**, chọn ngôn ngữ nguồn và đích. Mặc định là tiếng Nhật sang tiếng Việt. Vosk hỗ trợ nhận dạng tiếng Nhật, Anh, Việt, Hàn và Trung.
 2. Chọn **Tạo transcript** và chọn track âm thanh nếu video có nhiều track. Vosk dùng mốc thời gian của từng từ để ghép lời thoại thành câu theo dấu câu và khoảng ngắt. Với lời thoại dài, ứng dụng ưu tiên tách ở chỗ ngắt tự nhiên để phụ đề dễ đọc. Nếu đã có phụ đề theo thời gian, dùng **Nhập phụ đề (SRT/VTT)** trong menu **⋯**.
 3. Danh sách transcript trong trình phát hiển thị lời gốc theo câu. Khi có bản dịch, mỗi câu đã dịch hiển thị cả lời gốc và bản dịch. Chạm vào câu để tua đến mốc thời gian tương ứng.
-4. Cả nút **Phụ đề** và **Phát âm** đều hiển thị trạng thái **Tắt**, **Gốc** hoặc **Dịch**. Chạm vào từng nút để đổi chế độ. Cả hai bám theo mốc thời gian của câu. Vào **Cài đặt → Âm thanh → Chọn giọng đọc** để chọn và nghe thử giọng TextToSpeech trên thiết bị.
+4. Cả nút **Phụ đề** và **Phát âm** đều hiển thị trạng thái **Tắt**, **Gốc** hoặc **Dịch**. Chạm vào từng nút để đổi chế độ. Cả hai bám theo mốc thời gian của câu. Vào **Cài đặt → Model và giọng đọc → Chọn giọng đọc** để chọn và nghe thử giọng TextToSpeech trên thiết bị.
 
 ### Hai chế độ dịch ngoại tuyến
 
 | Chế độ | Cách hoạt động | Model |
 | --- | --- | --- |
-| **Dịch → Theo câu** | ML Kit dịch từng câu theo cặp ngôn ngữ đã chọn. | Tải các gói ngôn ngữ cần thiết trong **Cài đặt → Quản lý model → Dịch**. Tiếng Anh là ngôn ngữ trung gian và không cần gói riêng. |
-| **Dịch → Ngữ cảnh** | Qwen phân tích transcript của cả video để xây dựng hướng dẫn chung, rồi dùng hướng dẫn đó cùng các câu lân cận khi dịch sang tiếng Việt. Kết quả vẫn gắn với từng câu và mốc thời gian gốc. | Tải **Qwen3-4B Q4_K_M** (khoảng 2,5 GB) trong **Cài đặt → Quản lý model → Dịch**. |
+| **Dịch → Theo câu** | Chọn **M2M100 418M INT8** để dịch trực tiếp offline trên Android ARM64. Chế độ **Tự động** dùng ML Kit cho cặp có tiếng Anh ở một đầu và Qwen cho các cặp ngoài tiếng Anh. | Tải hoặc nhập tệp trong **Cài đặt → Model và giọng đọc → Dịch offline**. M2M100 cần khoảng 1,15 GB. |
+| **Dịch → Ngữ cảnh** | Qwen phân tích transcript của cả video để xây dựng hướng dẫn chung, rồi dùng hướng dẫn đó cùng các câu lân cận khi dịch sang tiếng Việt. Kết quả vẫn gắn với từng câu và mốc thời gian gốc. | Tải **Qwen3-4B Q4_K_M** (khoảng 2,5 GB) trong **Model và giọng đọc → Dịch offline → Dịch theo ngữ cảnh**. |
 
 **Ngữ cảnh** giúp chọn cách xưng hô phù hợp với quan hệ nhân vật, giữ tên riêng và thuật ngữ nhất quán, đồng thời dịch tiếng lóng và thành ngữ theo ý người nói. Có thể nhập tên riêng, thuật ngữ và cách xưng hô ưu tiên trước khi dịch. Cả hai chế độ chạy trên thiết bị sau khi tải đủ model.
 
-Khi dịch theo **Ngữ cảnh**, ML Kit có thể hiển thị sớm bản nháp cho các câu còn thiếu trong lúc Qwen xử lý. Qwen ưu tiên các câu gần vị trí đang phát, phân tích transcript theo nhóm để xây dựng ngữ cảnh chung, rồi hiệu đính những câu cần xem lại. Khi chạy lại cùng tác vụ, ứng dụng có thể dùng lại phần phân tích và bản dịch đã lưu tạm. Khi dịch riêng một câu theo ngữ cảnh, xem trước kết quả rồi bấm **Áp dụng**.
+Khi dịch theo **Ngữ cảnh**, Qwen có thể dùng lại bản nháp đã dịch trực tiếp. Với video tiếng Anh, ML Kit có thể tạo sớm bản nháp tiếng Việt cho các câu còn thiếu. Qwen ưu tiên các câu gần vị trí đang phát, phân tích transcript theo nhóm để xây dựng ngữ cảnh chung, rồi hiệu đính những câu cần xem lại. Khi chạy lại cùng tác vụ, ứng dụng có thể dùng lại phần phân tích và bản dịch đã lưu tạm. Khi dịch riêng một câu theo ngữ cảnh, xem trước kết quả rồi bấm **Áp dụng**.
 
-Nếu còn câu chưa dịch, dùng **Dịch lại N câu thiếu** để thử lại hoặc **Xử lý N câu thiếu** để mở từng câu, nghe lại, sửa lời gốc và dịch lại. Với bản dịch tiếng Việt đã có, tùy chọn **Dịch lại các câu tự động và giữ câu đã sửa tay** trong **Ngữ cảnh** cho phép hiệu đính lại các câu do ứng dụng dịch và giữ những câu đã chỉnh sửa.
+Để có bản dịch tiếng Việt trước khi hiệu đính, chọn **Dịch → Theo câu**, rồi mở **Dịch lại → Ngữ cảnh** và chọn **Rà soát bản dịch tự động đã có**. Qwen dùng lại bản dịch theo câu, hiệu đính những câu cần ngữ cảnh và giữ các câu đã sửa tay.
+
+Nếu còn câu chưa dịch, dùng **Dịch tiếp** để xem các lựa chọn xử lý.
 
 Trong menu **⋯** của trình phát, dùng **Xuất tệp** hoặc **Chia sẻ** để lưu hay gửi transcript gốc, bản dịch hoặc nội dung song ngữ dưới dạng TXT hoặc SRT.
 
 Có thể đóng gói model nhận dạng Vosk vào APK theo [hướng dẫn model Vosk](app/src/main/assets/README-vosk-models.txt).
 
-## Build và kiểm thử
+## Hiệu năng thiết bị và Qwen
+
+Ở cuối màn hình chính, **Hiệu năng thiết bị** hiển thị mức sử dụng CPU của AI Player, tên GPU, khả năng dùng Vulkan cho Qwen và RAM khả dụng. Mở **Chi tiết** để xem biểu đồ CPU và RAM trong 60 giây, bộ nhớ của ứng dụng (PSS) và thông tin lượt dịch Qwen gần nhất trong phiên.
+
+Trong **Cài đặt → Model và giọng đọc → Dịch offline → Dịch theo ngữ cảnh → Ưu tiên xử lý Qwen**, chọn bộ xử lý cho lượt Qwen tiếp theo.
+
+| Tùy chọn | Cách xử lý |
+| --- | --- |
+| **Tự động** | Hiện dùng CPU. |
+| **Ưu tiên GPU** | Thử Vulkan khi bản cài có hỗ trợ và thiết bị nhận diện được GPU Vulkan. Qwen chuyển sang CPU nếu không dùng được GPU. |
+| **CPU** | Chạy Qwen trên CPU. |
+
+Xem trạng thái trong tiến độ dịch để xác nhận Qwen thực tế chạy trên CPU hay GPU.
+
+## Tải, cài lại và xuất model
+
+Trong tab **Dịch offline**, mục **Dịch theo câu** chứa M2M100 và **Gói ngôn ngữ ML Kit**. Mở phần ML Kit để xem gói theo từng ngôn ngữ. Mục **Dịch theo ngữ cảnh** chứa Qwen và tùy chọn bộ xử lý.
+
+Mở **Cài đặt → Model và giọng đọc**. Các thao tác dưới đây áp dụng cho cả `standalone` và `play`.
+
+| Model | Cài lần đầu từ tệp | Menu **⋮** sau khi đã cài |
+| --- | --- | --- |
+| **Vosk** | Trong **Nhận dạng**, chọn **Nhập tệp model** tại dòng ngôn ngữ tương ứng và chọn gói ZIP. | **Cài lại từ tệp** hoặc **Xuất model** (ZIP). |
+| **M2M100** | Trong **Dịch offline**, chọn **⋮ → Nhập tệp model** và chọn ZIP đã xuất hoặc các tệp rời. | **Cài lại từ tệp** hoặc **Xuất model** (ZIP). |
+| **Qwen** | Trong **Dịch offline**, chọn **Nhập tệp model** tại mục **Dịch theo ngữ cảnh**, rồi chọn GGUF của **Qwen3-4B Q4_K_M**. | **Cài lại từ tệp** hoặc **Xuất model** (GGUF). |
+
+Sau khi chọn **Xuất model**, chọn nơi lưu tệp. Dùng tệp đã xuất để cài trên thiết bị khác hoặc cài lại trên thiết bị hiện tại. Các gói ML Kit được tải lại từ tab **Dịch offline**.
+
+Nếu tải năm tệp M2M100 bên dưới trên máy tính rồi chuyển sang điện thoại, có thể nhập các tệp rời qua nhiều lượt khi cài lần đầu. Khi cài lại, chọn đủ năm tệp rời trong một lượt.
+
+- [encoder_model_int8.onnx](https://huggingface.co/Xenova/m2m100_418M/resolve/9c374f0/onnx/encoder_model_int8.onnx)
+- [decoder_model_int8.onnx](https://huggingface.co/Xenova/m2m100_418M/resolve/9c374f0/onnx/decoder_model_int8.onnx)
+- [sentencepiece.bpe.model](https://huggingface.co/Xenova/m2m100_418M/resolve/9c374f0/sentencepiece.bpe.model)
+- [vocab.json](https://huggingface.co/Xenova/m2m100_418M/resolve/9c374f0/vocab.json)
+- [tokenizer_config.json](https://huggingface.co/Xenova/m2m100_418M/resolve/9c374f0/tokenizer_config.json)
 
 Xem [quy trình nghiệm thu tải Qwen và dịch ngữ cảnh trên Redmi](docs/model-acceptance-ja-vi.md#nghiệm-thu-qwen-trên-redmi) để đối chứng với ML Kit.
+
+## Build và kiểm thử
 
 Để tự build từ GitHub, tải mã nguồn bằng Git.
 
@@ -115,6 +157,22 @@ Chạy từ thư mục gốc trên Windows. Trên Linux hoặc macOS, thay `.\gr
 .\gradlew.bat :app:assembleStandaloneDebug :app:testStandaloneDebugUnitTest :app:lintStandaloneDebug
 .\gradlew.bat :app:assemblePlayDebug :app:testPlayDebugUnitTest :app:lintPlayDebug
 ```
+
+Để tạo APK nghiệm thu, mở **Actions → Qwen Vulkan Android debug → Run workflow** và chọn **standalone**. Tải artifact `ai-player-standalone-vulkan-debug-<commit>` sau khi workflow thành công. Có thể chọn **play** để kiểm tra biến thể còn lại với cùng cấu hình.
+
+Nếu build cục bộ, cài Vulkan SDK (có `glslc` và gói CMake `SPIRV-Headers`) cùng trình biên dịch C/C++ của máy build. Đặt `VULKAN_SDK` theo SDK rồi chạy từ môi trường có trình biên dịch trong PATH.
+
+```powershell
+.\gradlew.bat -PaiplayerVulkan=true :app:assembleStandaloneDebug :app:assemblePlayDebug
+```
+
+Trên Redmi, vào **Cài đặt → Model và giọng đọc → Dịch offline → Dịch theo ngữ cảnh → Ưu tiên xử lý Qwen**. Chọn **Ưu tiên GPU**, bắt đầu lượt dịch và đối chiếu trạng thái **GPU (Vulkan)** với dòng `backend=Vulkan` trong Logcat.
+
+```powershell
+adb logcat -s ContextTranslation
+```
+
+Nếu chuyển về CPU, ghi lại lý do hiển thị trong tiến độ. So sánh **CPU** và **Ưu tiên GPU** với cùng model **Qwen3-4B Q4_K_M** và cùng transcript, bắt đầu lượt dịch mới để tránh dùng kết quả đã lưu. Thử clip ngắn trước, rồi dùng video dài để so sánh thời gian, chất lượng phụ đề và độ mượt khi phát. **Tự động** dùng CPU trong giai đoạn nghiệm thu.
 
 APK debug nằm trong `app/build/outputs/apk/<flavor>/debug/`. Trên thiết bị, kiểm tra video có một, nhiều hoặc không có track âm thanh, nhập SRT/VTT, tải model lần đầu, dịch offline sau khi tải model, đổi video khi tác vụ đang chạy và tua/tạm dừng khi giọng đọc đang phát.
 
