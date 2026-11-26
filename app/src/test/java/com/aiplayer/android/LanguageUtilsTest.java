@@ -8,15 +8,15 @@ import org.junit.Test;
 
 public class LanguageUtilsTest {
     @Test
-    public void translationAvoidsMlKitPivotForDistinctNonEnglishLanguages() {
-        assertTrue(TranslationClient.requiresDirect("zh", "vi"));
-        assertTrue(TranslationClient.requiresDirect("ja", "vi"));
-        assertTrue(TranslationClient.requiresDirect("ko", "vi"));
-        assertTrue(TranslationClient.requiresDirect("vi", "ja"));
-        assertFalse(TranslationClient.requiresDirect("en", "vi"));
-        assertFalse(TranslationClient.requiresDirect("vi", "en"));
-        assertFalse(TranslationClient.requiresDirect("vi", "vi"));
-        assertFalse(TranslationClient.requiresDirect("auto", "vi"));
+    public void mlKitUsesEnglishPivotForDistinctNonEnglishLanguages() {
+        assertTrue(TranslationClient.usesEnglishPivot("zh", "vi"));
+        assertTrue(TranslationClient.usesEnglishPivot("ja", "vi"));
+        assertTrue(TranslationClient.usesEnglishPivot("ko", "vi"));
+        assertTrue(TranslationClient.usesEnglishPivot("vi", "ja"));
+        assertFalse(TranslationClient.usesEnglishPivot("en", "vi"));
+        assertFalse(TranslationClient.usesEnglishPivot("vi", "en"));
+        assertFalse(TranslationClient.usesEnglishPivot("vi", "vi"));
+        assertFalse(TranslationClient.usesEnglishPivot("auto", "vi"));
     }
 
     @Test

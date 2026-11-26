@@ -44,11 +44,13 @@ jobs:
       - name: Configure Android SDK
         run: |
           echo "ANDROID_HOME=${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}" >> "$GITHUB_ENV"
-          "${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-36" "build-tools;36.0.0"
+          "${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358" "cmake;3.22.1"
+      - name: Install pinned Vulkan build tools
+        run: bash scripts/setup-vulkan-ci.sh
       - name: Build APK with verified TDLib native candidate
         run: |
           chmod +x ./gradlew
-          ./gradlew --no-daemon :app:assembleStandaloneDebug :app:testStandaloneDebugUnitTest :app:lintStandaloneDebug
+          ./gradlew --no-daemon -PaiplayerVulkan=true :app:assembleStandaloneDebug :app:testStandaloneDebugUnitTest :app:lintStandaloneDebug
           unzip -l app/build/outputs/apk/standalone/debug/app-standalone-debug.apk | grep -F 'lib/arm64-v8a/libtdjsonjava.so'
       - name: Upload TDLib-enabled Android debug APK
         uses: actions/upload-artifact@v4

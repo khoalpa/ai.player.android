@@ -1,6 +1,7 @@
 <resources>
     <attr name="playerSelection" format="color" />
     <attr name="playerAccentText" format="color" />
+    <attr name="playerCpuTrend" format="color" />
     <attr name="playerButtonSurface" format="color" />
     <attr name="playerButtonDisabled" format="color" />
     <attr name="playerButtonDisabledInk" format="color" />

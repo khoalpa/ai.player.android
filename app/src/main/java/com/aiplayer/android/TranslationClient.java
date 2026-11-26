@@ -1,5 +1,10 @@
 package com.aiplayer.android;
 
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
+import android.util.Log;
+
 import com.google.android.gms.tasks.Task;
 import com.google.mlkit.common.model.DownloadConditions;
 import com.google.mlkit.nl.languageid.LanguageIdentification;
@@ -14,8 +19,27 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
+import java.util.function.Supplier;
 
 final class TranslationClient {
+    private static final String TAG = "SentenceTranslation";
+    private static final long SLOW_SENTENCE_MS = 10_000;
+    private static final long M2M_RECOVERY_MS = 10_000;
+    private static final long MODEL_SETUP_MS = 180_000;
+
+    private enum Engine {
+        ML_KIT("ML Kit", 30_000),
+        M2M("M2M100", 60_000),
+        QWEN("Qwen", 120_000);
+
+        final String label;
+        final long sentenceTimeoutMs;
+
+        Engine(String label, long sentenceTimeoutMs) {
+            this.label = label;
+            this.sentenceTimeoutMs = sentenceTimeoutMs;
+        }
+    }
     private static final int MAX_TRANSLATORS = 3;
     private static final int MAX_TRANSLATION_CACHE_ENTRIES = 2000;
     private static final Pattern WHITESPACE = Pattern.compile("\\s+");
@@ -25,6 +49,8 @@ final class TranslationClient {
         void onTranslated(int index, String translatedText);
 
         default void onModelUnavailable() {}
+
+        default void onSentence(String engine, int index, int total, long elapsedMs) {}
 
         default void onProgress(int completed, int total, int cached, int skipped) {
         }
@@ -50,15 +76,21 @@ final class TranslationClient {
         }
     };
     private boolean closed;
+    private boolean usesEnglishPivot;
+    private final Handler main = new Handler(Looper.getMainLooper());
+    private Runnable timeout;
+    private Runnable slowNotice;
     private final ContextTranslationClient contextual;
-    private final ContextModelStore directModel;
-    private ContextTranslationClient directEngine;
     private M2mTranslation m2mEngine;
     private M2mModelStore m2mModel;
+    private boolean requireInstalledMlKit;
 
-    TranslationClient(ContextTranslationClient contextual, ContextModelStore directModel) {
+    void useInstalledMlKit() {
+        requireInstalledMlKit = true;
+    }
+
+    TranslationClient(ContextTranslationClient contextual) {
         this.contextual = contextual;
-        this.directModel = directModel;
         languageIdentifier = contextual == null ? LanguageIdentification.getClient() : null;
     }
 
@@ -76,8 +108,7 @@ final class TranslationClient {
     }
 
     String processorLabel() {
-        ContextTranslationClient qwen = contextual == null ? directEngine : contextual;
-        return qwen == null ? "" : qwen.processorLabel();
+        return contextual == null ? "" : contextual.processorLabel();
     }
 
     void useM2m(M2mModelStore model) {
@@ -91,8 +122,7 @@ final class TranslationClient {
             return;
         }
 
-        AppSettings.QwenProcessor processor = settings.qwenProcessor;
-        resolveSourceLanguage(settings, languageSample)
+        bounded(() -> resolveSourceLanguage(settings, languageSample), 30_000)
                 .addOnSuccessListener(sourceLanguage -> {
                     if (closed) {
                         return;
@@ -123,57 +153,100 @@ final class TranslationClient {
                             return;
                         }
                         m2mEngine = new M2mTranslation(m2mModel);
-                        m2mEngine.prepare().addOnSuccessListener(ignored -> {
+                        bounded(m2mEngine::prepare, MODEL_SETUP_MS).addOnSuccessListener(ignored -> {
                             if (closed) return;
                             translateNext(text -> m2mEngine.translate(sourceLanguage, targetLanguage, text),
-                                    languagePair, cues, callback, new TranslationState(cues.size()));
+                                    languagePair, cues, callback, new TranslationState(cues.size(), Engine.M2M));
                         }).addOnFailureListener(error -> {
                             if (!closed) callback.onFinished(0, "Không mở được M2M100 INT8. " + error.getMessage());
                         });
                         return;
                     }
-                    if (requiresDirect(sourceLanguage, targetLanguage)) {
-                        if (!ContextModelStore.supported() || !directModel.installed()) {
-                            callback.onModelUnavailable();
-                            callback.onFinished(0, ContextModelStore.supported()
-                                    ? "Hãy tải Qwen trong Quản lý model để dịch trực tiếp " + languagePair + "."
-                                    : "Dịch trực tiếp " + languagePair + " cần Android ARM64.");
-                            return;
-                        }
-                        directEngine = new ContextTranslationClient(directModel, "", processor);
-                        directEngine.prepareDirect().addOnSuccessListener(ignored -> {
-                            if (closed) return;
-                            callback.onProgress(0, cues.size(), 0, 0);
-                            if (closed) return;
-                            translateNext(text -> directEngine.translateDirect(sourceLanguage, targetLanguage, text),
-                                    languagePair, cues, callback, new TranslationState(cues.size()));
-                        }).addOnFailureListener(error -> {
-                            if (!closed) callback.onFinished(0, "Không mở được model dịch offline Qwen.");
-                        });
-                        return;
-                    }
+                    usesEnglishPivot = usesEnglishPivot(sourceLanguage, targetLanguage);
                     Translator translator = translatorFor(sourceLanguage, targetLanguage);
                     DownloadConditions conditions = new DownloadConditions.Builder().build();
-                    translator.downloadModelIfNeeded(conditions)
+                    bounded(() -> requireInstalledMlKit
+                            ? requireMlKitLanguages(sourceLanguage, targetLanguage)
+                            : translator.downloadModelIfNeeded(conditions), MODEL_SETUP_MS)
                             .addOnSuccessListener(v -> {
                                 if (closed) return;
-                                translateNext(translator::translate, languagePair, cues, callback, new TranslationState(cues.size()));
+                                translateNext(translator::translate, languagePair, cues, callback,
+                                        new TranslationState(cues.size(), Engine.ML_KIT));
                             })
                             .addOnFailureListener(ex -> {
                                 if (closed) return;
+                                if (ex instanceof java.util.concurrent.TimeoutException) {
+                                    callback.onFinished(0, "Quá thời gian chuẩn bị model ML Kit.");
+                                    return;
+                                }
                                 callback.onModelUnavailable();
                                 callback.onFinished(0,
                                         "Chưa có model dịch offline " + sourceLanguage + " -> " + targetLanguage
                                                 + ". Hãy kết nối mạng một lần để tải model, sau đó có thể dịch offline.");
                             });
                 })
-                .addOnFailureListener(ex -> callback.onFinished(0, "Không nhận diện được ngôn ngữ nguồn: " + ex.getMessage()));
+                .addOnFailureListener(ex -> {
+                    if (!closed) callback.onFinished(0, "Không nhận diện được ngôn ngữ nguồn: " + ex.getMessage());
+                });
+    }
+
+    private Task<Void> requireMlKitLanguages(String source, String target) {
+        return com.google.mlkit.common.model.RemoteModelManager.getInstance()
+                .getDownloadedModels(com.google.mlkit.nl.translate.TranslateRemoteModel.class)
+                .continueWith(task -> {
+                    if (!task.isSuccessful()) throw task.getException();
+                    java.util.Set<String> installed = new java.util.HashSet<>();
+                    for (com.google.mlkit.nl.translate.TranslateRemoteModel model : task.getResult()) {
+                        installed.add(model.getLanguage());
+                    }
+                    if ((!TranslateLanguage.ENGLISH.equals(source) && !installed.contains(source))
+                            || (!TranslateLanguage.ENGLISH.equals(target) && !installed.contains(target))) {
+                        throw new java.io.IOException("Thiếu gói ngôn ngữ ML Kit.");
+                    }
+                    return null;
+                });
+    }
+
+    // All listeners and timers run on the main looper, with one pending operation per client.
+    private <T> Task<T> bounded(Supplier<Task<T>> operation, long timeoutMs) {
+        com.google.android.gms.tasks.TaskCompletionSource<T> result =
+                new com.google.android.gms.tasks.TaskCompletionSource<>();
+        Runnable deadline = () -> {
+            clearTimers();
+            result.trySetException(new java.util.concurrent.TimeoutException("Đã quá thời gian chờ."));
+        };
+        timeout = deadline;
+        main.postDelayed(deadline, timeoutMs);
+        try {
+            operation.get().addOnCompleteListener(task -> {
+                if (closed || timeout != deadline) return;
+                clearTimers();
+                if (task.isSuccessful()) {
+                    result.trySetResult(task.getResult());
+                } else {
+                    Exception error = task.getException();
+                    result.trySetException(error == null
+                            ? new java.util.concurrent.CancellationException("Bộ dịch đã hủy xử lý.") : error);
+                }
+            });
+        } catch (RuntimeException error) {
+            clearTimers();
+            result.trySetException(error);
+        }
+        return result.getTask();
+    }
+
+    private void clearTimers() {
+        if (timeout != null) main.removeCallbacks(timeout);
+        if (slowNotice != null) main.removeCallbacks(slowNotice);
+        timeout = null;
+        slowNotice = null;
     }
 
     void close() {
         closed = true;
+        clearTimers();
         if (contextual != null) contextual.close();
-        if (directEngine != null) directEngine.close();
         if (m2mEngine != null) m2mEngine.close();
         if (languageIdentifier != null) languageIdentifier.close();
         for (Translator translator : translators.values()) {
@@ -183,9 +256,13 @@ final class TranslationClient {
         translationCache.clear();
     }
 
-    static boolean requiresDirect(String source, String target) {
+    boolean usesEnglishPivot() {
+        return usesEnglishPivot;
+    }
+
+    static boolean usesEnglishPivot(String source, String target) {
         return source != null && !"auto".equals(source) && !source.equals(target)
-                && !"en".equals(source) && !"en".equals(target);
+                && !TranslateLanguage.ENGLISH.equals(source) && !TranslateLanguage.ENGLISH.equals(target);
     }
 
     private Task<String> resolveSourceLanguage(AppSettings settings, List<TranscriptCue> cues) {
@@ -228,7 +305,7 @@ final class TranslationClient {
         if (closed) {
             return;
         }
-        while (state.index < cues.size()) {
+        while (!closed && state.index < cues.size()) {
             int index = state.index;
             String sourceText = cues.get(index).sourceText;
             String normalizedText = normalizeCueText(sourceText);
@@ -236,13 +313,13 @@ final class TranslationClient {
 
             if (normalizedText.isEmpty()) {
                 state.failed++;
-                maybeReportProgress(callback, state);
+                reportProgress(callback, state);
                 continue;
             }
             if (!shouldTranslateText(normalizedText)) {
                 state.skipped++;
                 callback.onTranslated(index, sourceText);
-                maybeReportProgress(callback, state);
+                reportProgress(callback, state);
                 continue;
             }
 
@@ -251,33 +328,83 @@ final class TranslationClient {
             if (cachedTranslation != null) {
                 state.cached++;
                 callback.onTranslated(index, cachedTranslation);
-                maybeReportProgress(callback, state);
+                reportProgress(callback, state);
                 continue;
             }
 
-            translator.apply(normalizedText)
+            long started = SystemClock.elapsedRealtime();
+            callback.onSentence(state.engine.label, index + 1, state.total, 0);
+            if (closed) return;
+            slowNotice = new Runnable() {
+                @Override public void run() {
+                    callback.onSentence(state.engine.label, index + 1, state.total,
+                            SystemClock.elapsedRealtime() - started);
+                    if (slowNotice == this) main.postDelayed(this, SLOW_SENTENCE_MS);
+                }
+            };
+            main.postDelayed(slowNotice, SLOW_SENTENCE_MS);
+            bounded(() -> translator.apply(normalizedText), state.engine.sentenceTimeoutMs)
                     .addOnSuccessListener(text -> {
                         if (closed) return;
-                        if (text == null || text.trim().isEmpty()) {
+                        boolean empty = text == null || text.trim().isEmpty();
+                        logSentence(state, index, started, empty ? "empty" : "success");
+                        if (empty) {
                             state.failed++;
                         } else {
                             translationCache.put(cacheKey, text);
                             state.translated++;
                             callback.onTranslated(index, text);
                         }
-                        maybeReportProgress(callback, state);
+                        reportProgress(callback, state);
                         translateNext(translator, languagePair, cues, callback, state);
                     })
                     .addOnFailureListener(ex -> {
                         if (closed) return;
+                        if (ex instanceof java.util.concurrent.TimeoutException) {
+                            if (state.engine == Engine.M2M) {
+                                state.failed++;
+                                state.timedOut++;
+                                Log.w(TAG, "engine=M2M100 sentence=" + (index + 1) + "/" + state.total
+                                        + " input_chars=" + normalizedText.length()
+                                        + " elapsed_ms=" + (SystemClock.elapsedRealtime() - started)
+                                        + " result=timeout");
+                                reportProgress(callback, state);
+                                if (closed) return;
+                                bounded(m2mEngine::recoverAfterTimeout, M2M_RECOVERY_MS)
+                                        .addOnSuccessListener(ignored -> {
+                                            if (closed) return;
+                                            Log.d(TAG, "engine=M2M100 recovery=success");
+                                            translateNext(translator, languagePair, cues, callback, state);
+                                        })
+                                        .addOnFailureListener(error -> {
+                                            if (closed) return;
+                                            Log.w(TAG, "engine=M2M100 recovery=failed", error);
+                                            callback.onFinished(state.completed() - state.failed,
+                                                    state.timedOut + " câu quá thời gian. M2M100 không thể phục hồi.");
+                                        });
+                                return;
+                            }
+                            logSentence(state, index, started, "timeout");
+                            callback.onFinished(state.completed() - state.failed,
+                                    state.engine.label + " quá thời gian xử lý câu " + (index + 1)
+                                            + ". Hãy dịch tiếp các câu còn thiếu.");
+                            return;
+                        }
+                        logSentence(state, index, started, ex.getClass().getSimpleName());
                         state.failed++;
-                        maybeReportProgress(callback, state);
+                        reportProgress(callback, state);
                         translateNext(translator, languagePair, cues, callback, state);
                     });
             return;
         }
+        if (closed) return;
         int completed = state.completed();
-        callback.onProgress(completed, state.total, state.cached, state.skipped);
+        if (state.timedOut > 0) {
+            int otherFailures = state.failed - state.timedOut;
+            callback.onFinished(completed - state.failed, state.timedOut + " câu quá thời gian"
+                    + (otherFailures > 0 ? " · " + otherFailures + " câu lỗi khác" : "") + ".");
+            return;
+        }
         callback.onFinished(
                 completed - state.failed,
                 "Đã dịch offline " + state.translated + "/" + state.total
@@ -288,13 +415,13 @@ final class TranslationClient {
         );
     }
 
-    private void maybeReportProgress(Callback callback, TranslationState state) {
-        int completed = state.completed();
-        int interval = Math.max(1, state.total / 20);
-        if (completed == state.total || completed - state.lastProgress >= interval) {
-            state.lastProgress = completed;
-            callback.onProgress(completed, state.total, state.cached, state.skipped);
-        }
+    private void reportProgress(Callback callback, TranslationState state) {
+        callback.onProgress(state.completed(), state.total, state.cached, state.skipped);
+    }
+
+    private void logSentence(TranslationState state, int index, long started, String result) {
+        Log.d(TAG, "engine=" + state.engine.label + " sentence=" + (index + 1) + "/" + state.total
+                + " elapsed_ms=" + (SystemClock.elapsedRealtime() - started) + " result=" + result);
     }
 
     private String normalizeCueText(String text) {
@@ -324,15 +451,17 @@ final class TranslationClient {
 
     private static final class TranslationState {
         final int total;
+        final Engine engine;
         int index;
         int translated;
         int cached;
         int skipped;
         int failed;
-        int lastProgress;
+        int timedOut;
 
-        TranslationState(int total) {
+        TranslationState(int total, Engine engine) {
             this.total = total;
+            this.engine = engine;
         }
 
         int completed() {

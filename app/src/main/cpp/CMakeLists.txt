@@ -2,16 +2,43 @@ cmake_minimum_required(VERSION 3.22)
 project(aiplayer_context LANGUAGES C CXX)
 
 include(FetchContent)
-if (ANDROID AND GGML_VULKAN AND DEFINED ENV{VULKAN_SDK})
-    # Use host SDK headers and shader compiler, but link the Android NDK Vulkan loader.
-    find_path(Vulkan_INCLUDE_DIR vulkan/vulkan.hpp
-        HINTS "$ENV{VULKAN_SDK}/include" "$ENV{VULKAN_SDK}/Include"
-        NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-    find_program(Vulkan_GLSLC_EXECUTABLE glslc
-        HINTS "$ENV{VULKAN_SDK}/bin" "$ENV{VULKAN_SDK}/Bin"
-        NO_CMAKE_FIND_ROOT_PATH)
-    find_package(SPIRV-Headers CONFIG REQUIRED
-        HINTS "$ENV{VULKAN_SDK}" NO_CMAKE_FIND_ROOT_PATH)
+set(AIPLAYER_VULKAN_MODE "AUTO" CACHE STRING "Vulkan mode: AUTO, true or false")
+string(TOUPPER "${AIPLAYER_VULKAN_MODE}" vulkan_mode)
+if (NOT vulkan_mode MATCHES "^(AUTO|TRUE|FALSE)$")
+    message(FATAL_ERROR "aiplayerVulkan must be true or false when explicitly set.")
+endif()
+
+set(GGML_VULKAN OFF CACHE BOOL "Build the Vulkan backend" FORCE)
+if (ANDROID AND NOT vulkan_mode STREQUAL "FALSE")
+    if (DEFINED ENV{VULKAN_SDK})
+        # Use host SDK headers and shader compiler with the Android NDK loader.
+        find_path(aiplayer_vulkan_sdk_include vulkan/vulkan.hpp
+            HINTS "$ENV{VULKAN_SDK}/include" "$ENV{VULKAN_SDK}/Include"
+            NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+        find_program(aiplayer_vulkan_sdk_glslc glslc
+            HINTS "$ENV{VULKAN_SDK}/bin" "$ENV{VULKAN_SDK}/Bin"
+            NO_CMAKE_FIND_ROOT_PATH)
+        if (aiplayer_vulkan_sdk_include)
+            set(Vulkan_INCLUDE_DIR "${aiplayer_vulkan_sdk_include}")
+        endif()
+        if (aiplayer_vulkan_sdk_glslc)
+            set(Vulkan_GLSLC_EXECUTABLE "${aiplayer_vulkan_sdk_glslc}")
+        endif()
+    endif()
+    find_package(Vulkan QUIET COMPONENTS glslc)
+    find_package(SPIRV-Headers CONFIG QUIET HINTS "$ENV{VULKAN_SDK}" NO_CMAKE_FIND_ROOT_PATH)
+    find_program(HOST_C_COMPILER NAMES cl gcc clang NO_CMAKE_FIND_ROOT_PATH)
+    find_program(HOST_CXX_COMPILER NAMES cl g++ clang++ NO_CMAKE_FIND_ROOT_PATH)
+    if (Vulkan_FOUND AND EXISTS "${Vulkan_INCLUDE_DIR}/vulkan/vulkan.hpp"
+            AND TARGET SPIRV-Headers::SPIRV-Headers AND HOST_C_COMPILER AND HOST_CXX_COMPILER)
+        set(GGML_VULKAN ON CACHE BOOL "Build the Vulkan backend" FORCE)
+    else()
+        set(vulkan_requirements "Vulkan C++ headers, glslc, SPIRV-Headers CMake package and host C/C++ compilers")
+        if (vulkan_mode STREQUAL "TRUE")
+            message(FATAL_ERROR "Vulkan requested but build tools are incomplete. Install ${vulkan_requirements} and set VULKAN_SDK.")
+        endif()
+        message(STATUS "Qwen Vulkan disabled for this build. To enable it, install ${vulkan_requirements} and set VULKAN_SDK.")
+    endif()
 endif()
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_COMMON OFF CACHE BOOL "" FORCE)
@@ -44,6 +71,13 @@ FetchContent_Declare(sentencepiece
 FetchContent_MakeAvailable(sentencepiece)
 if(ANDROID)
     target_link_libraries(sentencepiece-static PUBLIC log)
+    # Scope known diagnostics from the pinned upstream code to the affected files.
+    if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        set_property(SOURCE "${sentencepiece_SOURCE_DIR}/src/builder.cc"
+            TARGET_DIRECTORY sentencepiece-static APPEND PROPERTY COMPILE_OPTIONS -Wno-unused-const-variable)
+        set_property(SOURCE "${sentencepiece_SOURCE_DIR}/src/sentencepiece_trainer.cc"
+            TARGET_DIRECTORY sentencepiece-static APPEND PROPERTY COMPILE_OPTIONS -Wno-inconsistent-missing-override)
+    endif()
 endif()
 
 add_library(aiplayer_m2m SHARED m2m_tokenizer.cpp)

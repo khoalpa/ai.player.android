@@ -23,7 +23,10 @@ final class OfflineModels {
     enum Operation { DOWNLOADING, DELETING, DOWNLOAD_FAILED, DELETE_FAILED }
 
     final VoskModelStore vosk;
-    final ContextModelStore contextual;
+    private final ContextModelStore standardModel;
+    private final ContextModelStore lightModel;
+    private final android.content.SharedPreferences contextPreferences;
+    private ContextModelStore contextual;
     final M2mModelStore m2m;
     boolean m2mDownloading;
     long m2mBytes;
@@ -31,6 +34,7 @@ final class OfflineModels {
     private volatile boolean m2mCancelled;
     private boolean m2mImporting;
     Operation contextOperation;
+    ContextModelStore contextOperationModel;
     long contextBytes;
     long contextTotal = -1;
     private volatile boolean contextCancelRequested;
@@ -54,7 +58,10 @@ final class OfflineModels {
 
     OfflineModels(Context context, Runnable changed) {
         vosk = new VoskModelStore(context);
-        contextual = new ContextModelStore(context);
+        standardModel = new ContextModelStore(context, false);
+        lightModel = new ContextModelStore(context, true);
+        contextPreferences = context.getSharedPreferences("context_translation_models", Context.MODE_PRIVATE);
+        contextual = contextPreferences.getBoolean("light", false) ? lightModel : standardModel;
         m2m = new M2mModelStore(context);
         connectivity = context.getSystemService(ConnectivityManager.class);
         this.changed = changed;
@@ -130,6 +137,17 @@ final class OfflineModels {
         changed.run();
     }
 
+    ContextModelStore contextual() { return contextual; }
+
+    ContextModelStore contextModel(boolean light) { return light ? lightModel : standardModel; }
+
+    void selectContextModel(boolean light) {
+        ContextModelStore selected = contextModel(light);
+        if (contextPending() || selected == contextual) return;
+        contextual = selected;
+        contextPreferences.edit().putBoolean("light", light).apply();
+    }
+
     boolean contextPending() { return contextOperation == Operation.DOWNLOADING; }
 
     boolean contextCancelling() { return contextCancelRequested; }
@@ -140,20 +158,21 @@ final class OfflineModels {
         changed.run();
     }
 
-    void downloadContextModel() {
-        if (contextPending() || contextual.installed() || !ContextModelStore.supported()) return;
-        startContextInstall(null, null);
+    void downloadContextModel(ContextModelStore model) {
+        if (contextPending() || model.installed() || !ContextModelStore.supported()) return;
+        startContextInstall(model, null, null);
     }
 
-    void importContextModel(android.content.ContentResolver resolver, android.net.Uri uri) {
+    void importContextModel(ContextModelStore model, android.content.ContentResolver resolver, android.net.Uri uri) {
         if (contextPending() || !ContextModelStore.supported()) return;
-        startContextInstall(resolver, uri);
+        startContextInstall(model, resolver, uri);
     }
 
-    private void startContextInstall(android.content.ContentResolver resolver, android.net.Uri uri) {
+    private void startContextInstall(ContextModelStore installing, android.content.ContentResolver resolver, android.net.Uri uri) {
+        contextOperationModel = installing;
         contextImporting = uri != null;
         contextOperation = Operation.DOWNLOADING;
-        contextBytes = contextImporting ? 0 : contextual.partialBytes();
+        contextBytes = contextImporting ? 0 : installing.partialBytes();
         contextTotal = -1;
         contextCancelRequested = false;
         contextError = null;
@@ -167,8 +186,8 @@ final class OfflineModels {
                     contextTotal = total;
                     changed.run();
                 });
-                if (uri == null) contextual.download(() -> contextCancelRequested, progress);
-                else contextual.importModel(resolver, uri, () -> contextCancelRequested, progress);
+                if (uri == null) installing.download(() -> contextCancelRequested, progress);
+                else installing.importModel(resolver, uri, () -> contextCancelRequested, progress);
             } catch (Exception error) {
                 failure = error.getMessage();
                 if (failure == null) failure = "Không tải được model dịch theo ngữ cảnh.";
@@ -215,9 +234,10 @@ final class OfflineModels {
         }));
     }
 
-    void deleteContextModel() {
-        if (contextPending() || !contextual.installed()) return;
-        boolean deleted = contextual.file.delete();
+    void deleteContextModel(ContextModelStore model) {
+        if (contextPending() || !model.installed()) return;
+        contextOperationModel = model;
+        boolean deleted = model.file.delete();
         contextOperation = deleted ? null : Operation.DELETE_FAILED;
         contextError = deleted ? null : "Không xóa được model dịch theo ngữ cảnh.";
         changed.run();

@@ -21,6 +21,7 @@ final class CueSpeech {
     private final Runnable playbackChanged;
     private boolean ready;
     private boolean initializing = true;
+    private boolean closed;
     private TranscriptCue lastCue;
     private String lastText;
     private String lastLanguage;
@@ -34,11 +35,17 @@ final class CueSpeech {
     }
 
     CueSpeech(Context context, Consumer<String> status, Runnable playbackChanged) {
+        this(context, status, playbackChanged, () -> {});
+    }
+
+    CueSpeech(Context context, Consumer<String> status, Runnable playbackChanged, Runnable initialized) {
         this.status = status;
         this.playbackChanged = playbackChanged;
         engine = new TextToSpeech(context, result -> main.post(() -> {
+            if (closed) return;
             ready = result == TextToSpeech.SUCCESS;
             initializing = false;
+            initialized.run();
         }));
         engine.setOnUtteranceProgressListener(new UtteranceProgressListener() {
             @Override
@@ -53,6 +60,7 @@ final class CueSpeech {
                 finish(id, false);
             }
 
+            @Deprecated
             @Override
             public void onError(String id) {
                 finish(id, true);
@@ -81,6 +89,10 @@ final class CueSpeech {
 
     boolean isSpeaking() {
         return speaking;
+    }
+
+    boolean hasActiveUtterance() {
+        return activeUtterance != null;
     }
 
     private void setSpeaking(boolean speaking) {
@@ -139,6 +151,31 @@ final class CueSpeech {
         return voices;
     }
 
+    Voice configuredVoice(String language, String name) {
+        if (!ready) return null;
+        if (!name.isEmpty()) {
+            for (Voice voice : voices(language)) {
+                if (name.equals(voice.getName())) return voice;
+            }
+        }
+        Voice voice = engine.getDefaultVoice();
+        return voice != null && voice.getLocale().getLanguage().equals(language) ? voice : null;
+    }
+
+    String voiceDataStatus(String language) {
+        if (initializing) return "Đang kiểm tra…";
+        if (!ready) return "Chưa xác định";
+        List<Voice> available = voices(language);
+        for (Voice voice : available) {
+            if (!voice.isNetworkConnectionRequired()) return "Có giọng ngoại tuyến";
+        }
+        int availability = engine.isLanguageAvailable(Locale.forLanguageTag(language));
+        if (availability == TextToSpeech.LANG_MISSING_DATA) return "Thiếu dữ liệu";
+        if (!available.isEmpty()) return "Có giọng cần mạng";
+        if (availability == TextToSpeech.LANG_NOT_SUPPORTED) return "Chưa hỗ trợ";
+        return "Chưa xác định";
+    }
+
     private boolean selectVoice(String language, String voiceName) {
         Locale locale = Locale.forLanguageTag(language);
         if (!ready || engine.setLanguage(locale) < 0) return false;
@@ -171,6 +208,8 @@ final class CueSpeech {
     }
 
     void close() {
+        closed = true;
+        ready = false;
         stop();
         engine.shutdown();
     }

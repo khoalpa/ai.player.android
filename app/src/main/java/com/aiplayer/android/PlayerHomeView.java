@@ -11,10 +11,12 @@ import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.os.Build;
 import android.text.TextUtils;
+import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
 import android.widget.FrameLayout;
+import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.PopupMenu;
@@ -34,6 +36,7 @@ import java.util.function.Supplier;
 import java.util.function.ToLongFunction;
 
 final class PlayerHomeView extends ScrollView {
+    private static final int RECENT_VIDEO_DISPLAY_LIMIT = 2;
     private static final long RESUME_LABEL_MIN_MS = 1000;
 
     private final AppSettings settings;
@@ -42,7 +45,11 @@ final class PlayerHomeView extends ScrollView {
     private final LinearLayout taskSection;
     private final TextView taskHeading;
     private final TextView taskTitle, taskDetail;
+    private final TextView taskSummary;
+    private final ProgressBar taskProgress;
     private final Button taskAction;
+    private final Button taskCancel;
+    private final ImageButton taskStatusAction;
     private final Consumer<Uri> playRecent;
     private final Consumer<Uri> removeRecent;
     private final ExecutorService previews = Executors.newSingleThreadExecutor();
@@ -91,12 +98,48 @@ final class PlayerHomeView extends ScrollView {
         LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(-1, -2);
         cardParams.topMargin = dp(8);
         taskSection.addView(taskCard, cardParams);
+        LinearLayout taskHeader = new LinearLayout(context);
+        taskHeader.setGravity(Gravity.CENTER_VERTICAL);
+        taskCard.addView(taskHeader, new LinearLayout.LayoutParams(-1, -2));
         taskTitle = label(14, true);
-        taskCard.addView(taskTitle);
+        taskHeader.addView(taskTitle, new LinearLayout.LayoutParams(0, -2, 1));
+        taskCancel = new Button(context);
+        taskCancel.setText("Hủy");
+        taskCancel.setAllCaps(false);
+        PlayerAppearance.styleButton(taskCancel, PlayerAppearance.ButtonRole.ACCENT, settings);
+        taskCancel.setVisibility(GONE);
+        LinearLayout.LayoutParams cancelParams = new LinearLayout.LayoutParams(-2, dp(48));
+        cancelParams.setMarginStart(dp(PlayerAppearance.CONTROL_GAP_DP));
+        taskHeader.addView(taskCancel, cancelParams);
+        taskStatusAction = new ImageButton(context);
+        taskStatusAction.setImageResource(R.drawable.ic_task_status);
+        taskStatusAction.setImageTintList(PlayerAppearance.IconRole.VIDEO.tint(context));
+        taskStatusAction.setScaleType(ImageView.ScaleType.CENTER);
+        TypedValue actionBackground = new TypedValue();
+        context.getTheme().resolveAttribute(android.R.attr.selectableItemBackgroundBorderless,
+                actionBackground, true);
+        taskStatusAction.setBackgroundResource(actionBackground.resourceId);
+        taskStatusAction.setFocusable(true);
+        taskStatusAction.setVisibility(GONE);
+        taskHeader.addView(taskStatusAction, new LinearLayout.LayoutParams(dp(48), dp(48)));
         taskDetail = label(12, false);
         taskDetail.setMaxLines(2);
         taskDetail.setEllipsize(TextUtils.TruncateAt.END);
         taskCard.addView(taskDetail);
+        taskSummary = label(12, false);
+        LinearLayout.LayoutParams summaryParams = new LinearLayout.LayoutParams(-1, -2);
+        summaryParams.topMargin = dp(4);
+        taskCard.addView(taskSummary, summaryParams);
+        taskProgress = new ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal);
+        ColorStateList progressTint = context.getColorStateList(R.color.primary_button_background);
+        taskProgress.setProgressTintList(progressTint);
+        taskProgress.setIndeterminateTintList(progressTint);
+        taskProgress.setProgressBackgroundTintList(ColorStateList.valueOf(
+                PlayerAppearance.color(context, R.attr.playerSelection)));
+        taskProgress.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        LinearLayout.LayoutParams progressParams = new LinearLayout.LayoutParams(-1, dp(4));
+        progressParams.topMargin = dp(8);
+        taskCard.addView(taskProgress, progressParams);
         taskAction = new Button(context);
         taskAction.setAllCaps(false);
         PlayerAppearance.styleButton(taskAction, PlayerAppearance.ButtonRole.ACCENT, settings);
@@ -114,14 +157,38 @@ final class PlayerHomeView extends ScrollView {
     }
 
     void bindTask(String title, String detail, String action, Runnable onClick) {
+        bindTask(title, detail, action, onClick, false);
+    }
+
+    void bindTask(String title, String detail, String action, Runnable onClick, boolean showStatusIcon) {
+        bindTask(title, detail, action, onClick, showStatusIcon, null, null, null);
+    }
+
+    void bindTask(String title, String detail, String action, Runnable onClick, boolean showStatusIcon,
+                  String summary, VideoSession.TaskProgress progress, Runnable onCancel) {
         taskSection.setVisibility(title == null ? GONE : VISIBLE);
-        taskHeading.setVisibility(onClick == null ? GONE : VISIBLE);
+        taskHeading.setVisibility(onClick == null && onCancel == null ? GONE : VISIBLE);
         taskTitle.setText(title);
         taskDetail.setText(detail);
         taskDetail.setVisibility(TextUtils.isEmpty(detail) ? GONE : VISIBLE);
+        taskSummary.setText(summary);
+        taskSummary.setVisibility(TextUtils.isEmpty(summary) ? GONE : VISIBLE);
+        taskProgress.setVisibility(progress == null ? GONE : VISIBLE);
+        taskProgress.setIndeterminate(progress != null && progress.total <= 0);
+        if (progress != null && progress.total > 0) {
+            taskProgress.setMax(progress.total);
+            taskProgress.setProgress(progress.completed);
+        }
+        boolean showIcon = onClick != null && showStatusIcon;
+        boolean showButton = onClick != null && !showStatusIcon;
         taskAction.setText(action);
-        taskAction.setOnClickListener(onClick == null ? null : view -> onClick.run());
-        taskAction.setVisibility(onClick == null ? GONE : VISIBLE);
+        taskAction.setOnClickListener(showButton ? view -> onClick.run() : null);
+        taskAction.setVisibility(showButton ? VISIBLE : GONE);
+        taskStatusAction.setContentDescription(action);
+        taskStatusAction.setOnClickListener(showIcon ? view -> onClick.run() : null);
+        taskStatusAction.setVisibility(showIcon ? VISIBLE : GONE);
+        taskCancel.setOnClickListener(onCancel == null ? null : view -> onCancel.run());
+        taskCancel.setVisibility(onCancel == null ? GONE : VISIBLE);
     }
 
     void bindRecent(List<PlaybackSessionStore.RecentVideo> videos, ToLongFunction<Uri> position,
@@ -132,7 +199,9 @@ final class PlayerHomeView extends ScrollView {
         recentStatusUpdates.clear();
         recent.removeViews(1, recent.getChildCount() - 1);
         recent.setVisibility(videos.isEmpty() ? GONE : VISIBLE);
-        for (PlaybackSessionStore.RecentVideo video : videos) {
+        int visibleCount = Math.min(videos.size(), RECENT_VIDEO_DISPLAY_LIMIT);
+        for (int index = 0; index < visibleCount; index++) {
+            PlaybackSessionStore.RecentVideo video = videos.get(index);
             addRecentCard(video, position.applyAsLong(video.uri), duration, savedStatus, activeStatus);
         }
     }

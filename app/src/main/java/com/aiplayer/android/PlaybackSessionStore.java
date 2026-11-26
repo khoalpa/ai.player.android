@@ -396,6 +396,11 @@ final class PlaybackSessionStore {
     }
 
     void save(Uri uri, String identity, long position, VideoSession session, boolean updatePosition) {
+        save(uri, identity, position, session, updatePosition, null);
+    }
+
+    void save(Uri uri, String identity, long position, VideoSession session, boolean updatePosition,
+              Consumer<Snapshot> saved) {
         if (identity == null) return;
         List<TranscriptCue> snapshot = new ArrayList<>();
         for (TranscriptCue cue : session.completedCues()) {
@@ -409,11 +414,13 @@ final class PlaybackSessionStore {
         state.contextualTranslation = session.contextualTranslation();
         state.translationGlossary = session.translationGlossary();
         IO.execute(() -> {
+            boolean written;
             synchronized (FILE_LOCK) {
                 state.suppressCache = snapshot.isEmpty()
                         && readSnapshotLocked(uri, identity, videoPreferences(uri)).suppressCache;
-                writeSnapshotLocked(state, updatePosition);
+                written = writeSnapshotLocked(state, updatePosition);
             }
+            if (saved != null) main.post(() -> saved.accept(written ? state : null));
         });
     }
 

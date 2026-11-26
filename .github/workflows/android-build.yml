@@ -25,6 +25,8 @@ jobs:
         run: |
           echo "ANDROID_HOME=${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}" >> "$GITHUB_ENV"
           "${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358" "cmake;3.22.1"
+      - name: Install pinned Vulkan build tools
+        run: bash scripts/setup-vulkan-ci.sh
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
       - name: Build pinned TDLib JSONJava and verify JNI bindings
@@ -47,7 +49,7 @@ jobs:
           PY
       - name: Build, unit tests and lint
         run: >-
-          ./gradlew --no-daemon --stacktrace
+          ./gradlew --no-daemon --stacktrace -PaiplayerVulkan=true
           :app:assembleStandaloneDebug :app:testStandaloneDebugUnitTest :app:lintStandaloneDebug
           :app:assemblePlayDebug :app:testPlayDebugUnitTest :app:lintPlayDebug
       - name: Verify native libraries are packaged in the standard APK
@@ -55,13 +57,16 @@ jobs:
           for flavor in standalone play; do
             apk="app/build/outputs/apk/$flavor/debug/app-$flavor-debug.apk"
             unzip -l "$apk" | grep -F 'lib/arm64-v8a/libtdjsonjava.so'
-            unzip -l "$apk" | grep -F 'lib/arm64-v8a/libaiplayer_context.so'
+            unzip -p "$apk" lib/arm64-v8a/libaiplayer_context.so | grep -aF "ggml_vulkan:" >/dev/null || {
+              echo "::error::Vulkan backend missing from $apk"
+              exit 1
+            }
             "${ANDROID_HOME}/build-tools/36.0.0/zipalign" -c -P 16 -v 4 "$apk"
           done
       - name: Build unsigned release packages
         if: github.event_name == 'workflow_dispatch'
         run: >-
-          ./gradlew --no-daemon --stacktrace
+          ./gradlew --no-daemon --stacktrace -PaiplayerVulkan=true
           :app:bundlePlayRelease :app:assembleStandaloneRelease
       - name: Upload unsigned release packages
         if: github.event_name == 'workflow_dispatch'

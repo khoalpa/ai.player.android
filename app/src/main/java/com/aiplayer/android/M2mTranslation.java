@@ -39,6 +39,7 @@ final class M2mTranslation {
     private long tokenizer;
     private OrtSession.RunOptions options;
     private volatile boolean cancelled;
+    private volatile boolean sentenceCancelled;
 
     M2mTranslation(M2mModelStore store) {
         this.store = store;
@@ -167,8 +168,29 @@ final class M2mTranslation {
         return new JSONObject(new String(Files.readAllBytes(store.file(file).toPath()), StandardCharsets.UTF_8));
     }
 
+    synchronized Task<Void> recoverAfterTimeout() {
+        if (cancelled) {
+            return com.google.android.gms.tasks.Tasks.forException(new IOException("M2M100 đã đóng."));
+        }
+        sentenceCancelled = true;
+        try {
+            options.setTerminate(true);
+        } catch (OrtException error) {
+            return com.google.android.gms.tasks.Tasks.forException(error);
+        }
+        // The single worker resets the terminate flag after the old inference exits.
+        return ExecutorTasks.submit(worker, () -> {
+            synchronized (this) {
+                if (cancelled) throw new IOException("M2M100 đã đóng.");
+                options.setTerminate(false);
+                sentenceCancelled = false;
+            }
+            return null;
+        });
+    }
+
     private void checkCancelled() throws IOException {
-        if (cancelled) throw new IOException("Đã dừng dịch M2M100.");
+        if (cancelled || sentenceCancelled) throw new IOException("Đã dừng dịch M2M100.");
     }
 
     synchronized void close() {

@@ -2,4 +2,7 @@
 <resources>
     <string name="app_name">AI Player</string>
     <string name="navigation_back">Quay lại</string>
+    <string name="transcript_source_accessibility">Transcript gốc, %1$s</string>
+    <string name="transcript_translation_accessibility">Bản dịch, %1$s</string>
+    <string name="transcript_translation_pending_accessibility">Bản dịch, chờ hiệu đính, %1$s</string>
 </resources>

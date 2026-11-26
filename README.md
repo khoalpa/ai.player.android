@@ -1,6 +1,6 @@
 # AI Player for Android
 
-AI Player phát video trên Android, tạo transcript theo câu bằng Vosk và đọc lời gốc hoặc bản dịch bằng giọng TextToSpeech của thiết bị. Sau khi cài model, ứng dụng có thể dịch ngoại tuyến theo câu bằng ML Kit, M2M100 hoặc Qwen và dịch sang tiếng Việt theo ngữ cảnh cả video bằng Qwen.
+AI Player phát video trên Android, tạo transcript theo câu bằng Vosk và đọc lời gốc hoặc bản dịch bằng giọng TextToSpeech của thiết bị. Sau khi cài model, ứng dụng có thể dịch ngoại tuyến theo câu bằng ML Kit hoặc M2M100 và dịch sang tiếng Việt theo ngữ cảnh cả video bằng Qwen.
 
 Trong ứng dụng, mở **⋮ → Hướng dẫn** để xem các bước sử dụng và xử lý sự cố.
 
@@ -54,7 +54,7 @@ Nếu gặp `INSTALL_FAILED_UPDATE_INCOMPATIBLE`, APK đang cài và APK mới c
 
 ## Mở và lưu video
 
-- **Mở video → Chọn tệp trên thiết bị** để phát tệp cục bộ. Màn hình khởi động hiển thị tối đa ba video gần đây và cho phép mở lại tại vị trí đã lưu.
+- **Mở video → Chọn tệp trên thiết bị** để phát tệp cục bộ. Màn hình khởi động hiển thị tối đa hai video gần đây và cho phép mở lại tại vị trí đã lưu.
 - **Mở video → Tải video từ URL** để tải video từ liên kết được hỗ trợ. Nếu liên kết dẫn đến một trang web, thử **Tìm video trên trang**. Video tải thành công xuất hiện trong **Video đã lưu**.
 - Có thể chia sẻ tệp video từ Telegram sang AI Player bằng menu chia sẻ Android. Với liên kết bài đăng Telegram, ứng dụng có thể thử tải từ bài đăng công khai hoặc dùng tài khoản Telegram qua TDLib. Khả năng tải phụ thuộc vào quyền truy cập và quyền lưu của bài đăng. Xem [luồng nhập Telegram](docs/telegram-import.md) và [tích hợp TDLib](docs/telegram-tdlib-integration.md).
 - Có thể mở liên kết `t.me`, `www.t.me` và `telegram.me` qua AI Player khi Android chuyển liên kết cho ứng dụng. Nếu thiết bị mở bằng Telegram hoặc trình duyệt theo mặc định, có thể dùng **Chia sẻ → AI Player** hoặc dán liên kết vào **Mở Telegram**.
@@ -63,21 +63,23 @@ Nếu gặp `INSTALL_FAILED_UPDATE_INCOMPATIBLE`, APK đang cài và APK mới c
 
 ## Transcript, bản dịch và phụ đề
 
-Khi chọn **Tạo transcript theo câu**, mục **Model cho lượt mới** ưu tiên **Vosk Large** nếu đã cài cho ngôn ngữ lời thoại. Nếu chỉ có **Vosk Small**, ứng dụng chọn Small. Có thể đổi model cho từng lượt hoặc cài thêm trong **Cài đặt → Model và giọng đọc → Nhận dạng**.
+Khi chọn **Tạo transcript** hoặc **Nhận dạng lại**, mục **Model cho lượt mới** liệt kê các model đã cài cho ngôn ngữ lời thoại. Ứng dụng chọn **Vosk Large** mặc định nếu có, hoặc **Vosk Small** nếu chỉ có Small. Thiết lập này áp dụng cho lần nhận dạng tiếp theo. Thông tin nguồn của transcript đã lưu vẫn hiển thị model từng tạo bản đó. Để cài thêm model, mở **Cài đặt → Model và giọng đọc → Nhận dạng**.
 
 1. Trong **Cài đặt → Ngôn ngữ và phụ đề**, chọn ngôn ngữ nguồn và đích. Mặc định là tiếng Nhật sang tiếng Việt. Vosk hỗ trợ nhận dạng tiếng Nhật, Anh, Việt, Hàn và Trung.
 2. Chọn **Tạo transcript** và chọn track âm thanh nếu video có nhiều track. Vosk dùng mốc thời gian của từng từ để ghép lời thoại thành câu theo dấu câu và khoảng ngắt. Với lời thoại dài, ứng dụng ưu tiên tách ở chỗ ngắt tự nhiên để phụ đề dễ đọc. Nếu đã có phụ đề theo thời gian, dùng **Nhập phụ đề (SRT/VTT)** trong menu **⋯**.
 3. Danh sách transcript trong trình phát hiển thị lời gốc theo câu. Khi có bản dịch, mỗi câu đã dịch hiển thị cả lời gốc và bản dịch. Chạm vào câu để tua đến mốc thời gian tương ứng.
-4. Cả nút **Phụ đề** và **Phát âm** đều hiển thị trạng thái **Tắt**, **Gốc** hoặc **Dịch**. Chạm vào từng nút để đổi chế độ. Cả hai bám theo mốc thời gian của câu. Vào **Cài đặt → Model và giọng đọc → Chọn giọng đọc** để chọn và nghe thử giọng TextToSpeech trên thiết bị.
+4. Cả nút **Phụ đề** và **Phát âm** đều hiển thị trạng thái **Tắt**, **Gốc** hoặc **Dịch**. Chạm vào từng nút để đổi chế độ. Cả hai bám theo mốc thời gian của câu. Vào **Cài đặt → Model và giọng đọc → Giọng đọc**, chọn ngôn ngữ rồi dùng **Đổi giọng** hoặc **Nghe thử**.
 
 ### Hai chế độ dịch ngoại tuyến
 
+Chọn **Model dịch** ngay trong hộp thoại tác vụ, ở chế độ **Theo câu** hoặc **Ngữ cảnh**. Dùng **Cài đặt → Model và giọng đọc → Dịch offline** để tải và quản lý model.
+
 | Chế độ | Cách hoạt động | Model |
 | --- | --- | --- |
-| **Dịch → Theo câu** | Chọn **M2M100 418M INT8** để dịch trực tiếp offline trên Android ARM64. Chế độ **Tự động** dùng ML Kit cho cặp có tiếng Anh ở một đầu và Qwen cho các cặp ngoài tiếng Anh. | Tải hoặc nhập tệp trong **Cài đặt → Model và giọng đọc → Dịch offline**. M2M100 cần khoảng 1,15 GB. |
-| **Dịch → Ngữ cảnh** | Qwen phân tích transcript của cả video để xây dựng hướng dẫn chung, rồi dùng hướng dẫn đó cùng các câu lân cận khi dịch sang tiếng Việt. Kết quả vẫn gắn với từng câu và mốc thời gian gốc. | Tải **Qwen3-4B Q4_K_M** (khoảng 2,5 GB) trong **Model và giọng đọc → Dịch offline → Dịch theo ngữ cảnh**. |
+| **Dịch → Theo câu** | Chọn **M2M100 418M INT8** để dịch trực tiếp offline trên Android ARM64. Khi chọn **ML Kit**, hai ngôn ngữ khác tiếng Anh được dịch qua tiếng Anh. | Tải hoặc nhập tệp trong **Cài đặt → Model và giọng đọc → Dịch offline**. M2M100 cần khoảng 1,15 GB. |
+| **Dịch → Ngữ cảnh** | Qwen phân tích transcript của cả video để xây dựng hướng dẫn chung, rồi dùng hướng dẫn đó cùng các câu lân cận khi dịch sang tiếng Việt. Kết quả vẫn gắn với từng câu và mốc thời gian gốc. | Chọn **Qwen3-4B Q4_K_M** (2,50 GB) hoặc **Qwen3-1.7B Q4_K_M** (1,28 GB) ngay trong hộp thoại **Dịch transcript**. Quản lý cả hai model trong **Model và giọng đọc → Dịch offline → Dịch theo ngữ cảnh**. |
 
-**Ngữ cảnh** giúp chọn cách xưng hô phù hợp với quan hệ nhân vật, giữ tên riêng và thuật ngữ nhất quán, đồng thời dịch tiếng lóng và thành ngữ theo ý người nói. Có thể nhập tên riêng, thuật ngữ và cách xưng hô ưu tiên trước khi dịch. Cả hai chế độ chạy trên thiết bị sau khi tải đủ model.
+**Ngữ cảnh** giúp chọn cách xưng hô phù hợp với quan hệ nhân vật, giữ tên riêng và thuật ngữ nhất quán, đồng thời dịch tiếng lóng và thành ngữ theo ý người nói. Nếu video cần quy ước riêng, chọn **+ Thêm quy ước dịch**, nhập mỗi quy ước một dòng rồi bấm **Lưu**. Chọn lại **Quy ước dịch** để chỉnh sửa. Cả hai chế độ chạy trên thiết bị sau khi tải đủ model.
 
 Khi dịch theo **Ngữ cảnh**, Qwen có thể dùng lại bản nháp đã dịch trực tiếp. Với video tiếng Anh, ML Kit có thể tạo sớm bản nháp tiếng Việt cho các câu còn thiếu. Qwen ưu tiên các câu gần vị trí đang phát, phân tích transcript theo nhóm để xây dựng ngữ cảnh chung, rồi hiệu đính những câu cần xem lại. Khi chạy lại cùng tác vụ, ứng dụng có thể dùng lại phần phân tích và bản dịch đã lưu tạm. Khi dịch riêng một câu theo ngữ cảnh, xem trước kết quả rồi bấm **Áp dụng**.
 
@@ -113,7 +115,7 @@ Mở **Cài đặt → Model và giọng đọc**. Các thao tác dưới đây 
 | --- | --- | --- |
 | **Vosk** | Trong **Nhận dạng**, chọn **Nhập tệp model** tại dòng ngôn ngữ tương ứng và chọn gói ZIP. | **Cài lại từ tệp** hoặc **Xuất model** (ZIP). |
 | **M2M100** | Trong **Dịch offline**, chọn **⋮ → Nhập tệp model** và chọn ZIP đã xuất hoặc các tệp rời. | **Cài lại từ tệp** hoặc **Xuất model** (ZIP). |
-| **Qwen** | Trong **Dịch offline**, chọn **Nhập tệp model** tại mục **Dịch theo ngữ cảnh**, rồi chọn GGUF của **Qwen3-4B Q4_K_M**. | **Cài lại từ tệp** hoặc **Xuất model** (GGUF). |
+| **Qwen** | Trong **Dịch offline**, chọn **Nhập tệp model** tại mục **Dịch theo ngữ cảnh**, trên dòng model cần cài, rồi chọn tệp GGUF tương ứng. | **Cài lại từ tệp** hoặc **Xuất model** (GGUF). |
 
 Sau khi chọn **Xuất model**, chọn nơi lưu tệp. Dùng tệp đã xuất để cài trên thiết bị khác hoặc cài lại trên thiết bị hiện tại. Các gói ML Kit được tải lại từ tab **Dịch offline**.
 
@@ -160,11 +162,13 @@ Chạy từ thư mục gốc trên Windows. Trên Linux hoặc macOS, thay `.\gr
 
 Để tạo APK nghiệm thu, mở **Actions → Qwen Vulkan Android debug → Run workflow** và chọn **standalone**. Tải artifact `ai-player-standalone-vulkan-debug-<commit>` sau khi workflow thành công. Có thể chọn **play** để kiểm tra biến thể còn lại với cùng cấu hình.
 
-Nếu build cục bộ, cài Vulkan SDK (có `glslc` và gói CMake `SPIRV-Headers`) cùng trình biên dịch C/C++ của máy build. Đặt `VULKAN_SDK` theo SDK rồi chạy từ môi trường có trình biên dịch trong PATH.
+Các bản ARM64 Debug và Release của cả standalone và play bật Vulkan khi máy build có đủ công cụ. Android Studio dùng cấu hình CPU nếu thiếu Vulkan SDK hoặc trình biên dịch C/C++ của máy build. Để bật Vulkan cục bộ, cài SDK có `glslc` và gói CMake `SPIRV-Headers`, đặt `VULKAN_SDK` và mở Android Studio từ môi trường có trình biên dịch trong PATH. CI dùng `-PaiplayerVulkan=true` để báo lỗi nếu thiếu công cụ.
 
 ```powershell
-.\gradlew.bat -PaiplayerVulkan=true :app:assembleStandaloneDebug :app:assemblePlayDebug
+.\gradlew.bat :app:assembleStandaloneDebug :app:assemblePlayDebug
 ```
+
+Để build APK chỉ dùng CPU, thêm `-PaiplayerVulkan=false` vào lệnh Gradle.
 
 Trên Redmi, vào **Cài đặt → Model và giọng đọc → Dịch offline → Dịch theo ngữ cảnh → Ưu tiên xử lý Qwen**. Chọn **Ưu tiên GPU**, bắt đầu lượt dịch và đối chiếu trạng thái **GPU (Vulkan)** với dòng `backend=Vulkan` trong Logcat.
 
@@ -172,7 +176,7 @@ Trên Redmi, vào **Cài đặt → Model và giọng đọc → Dịch offline 
 adb logcat -s ContextTranslation
 ```
 
-Nếu chuyển về CPU, ghi lại lý do hiển thị trong tiến độ. So sánh **CPU** và **Ưu tiên GPU** với cùng model **Qwen3-4B Q4_K_M** và cùng transcript, bắt đầu lượt dịch mới để tránh dùng kết quả đã lưu. Thử clip ngắn trước, rồi dùng video dài để so sánh thời gian, chất lượng phụ đề và độ mượt khi phát. **Tự động** dùng CPU trong giai đoạn nghiệm thu.
+Nếu chuyển về CPU, ghi lại lý do hiển thị trong tiến độ. So sánh **CPU** và **Ưu tiên GPU** với cùng model **Qwen3-4B Q4_K_M** và cùng transcript, bắt đầu lượt dịch mới để tránh dùng kết quả đã lưu. Lặp lại phép đo với **Qwen3-1.7B Q4_K_M**. Thử clip ngắn trước, rồi dùng cùng một tập phim Trung → Việt để so sánh thời gian, RAM, độ mượt khi phát, xưng hô và tính nhất quán của tên riêng. Khi Vulkan trả lỗi trong quá trình suy luận, app thử lại yêu cầu hiện tại bằng CPU. **Tự động** dùng CPU trong giai đoạn nghiệm thu.
 
 APK debug nằm trong `app/build/outputs/apk/<flavor>/debug/`. Trên thiết bị, kiểm tra video có một, nhiều hoặc không có track âm thanh, nhập SRT/VTT, tải model lần đầu, dịch offline sau khi tải model, đổi video khi tác vụ đang chạy và tua/tạm dừng khi giọng đọc đang phát.
 
@@ -203,6 +207,8 @@ Dùng **Build → Generate Signed Bundle / APK** trong Android Studio để tạ
 | `VideoWork`, `VideoWorkService` | Giữ tác vụ ngoài Activity, thông báo nền, hủy và checkpoint bản dịch |
 
 ## Tác vụ nền và khôi phục phiên
+
+Trên màn hình chính, theo dõi tiến độ tạo transcript hoặc dịch trong **Tác vụ gần đây**. Chạm biểu tượng **Xem trạng thái** khi có để mở chi tiết, hoặc chọn **Hủy** để dừng. Khi tác vụ hoàn tất, dùng **Xem kết quả** để mở lại video cùng kết quả đã lưu.
 
 - Định danh video được tính một lần khi mở rồi dùng lại cho cache trong phiên. Khi chọn/mở lại video, ứng dụng xác minh lại định danh để phát hiện thay đổi nội dung; không hỗ trợ thay nội dung tệp trong lúc tác vụ đang đọc chính tệp đó.
 - Truy vấn tên, metadata và hash chạy ở luồng nền. Đổi lựa chọn video hủy yêu cầu trước, gửi tín hiệu hủy tới provider và đóng luồng đọc đang mở. Provider cần hỗ trợ hủy/đóng luồng để ngắt được thao tác I/O đang bị chặn.

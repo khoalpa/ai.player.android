@@ -134,6 +134,11 @@ public class ContextTranslationClientTest {
         assertEquals(Arrays.asList(0, 2, 4, 6), ContextTranslationClient.groupBoundaries(sources, 4, 5));
     }
 
+    @Test public void oversizedFirstCueGetsItsOwnGroupWithoutAnEmptyGroup() {
+        assertEquals(Arrays.asList(0, 1, 3),
+                ContextTranslationClient.groupBoundaries(Arrays.asList("oversized", "a", "b"), 4, 5));
+    }
+
     @Test public void translationMustPreserveSelectedCueIdsAndOrder() throws Exception {
         List<Integer> selected = Arrays.asList(4, 72);
         JSONObject response = new JSONObject("{\"translations\":[{\"id\":4,\"text\":\"Mẹ ơi\"},"

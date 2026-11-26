@@ -32,11 +32,24 @@ final class ContextModelStore {
         void update(long written, long total);
     }
 
+    final String name;
+    final String sizeLabel;
+    final String sha256;
+    private final String filename;
+    private final String url;
+    private final long maxBytes;
+
     final File file;
     final File checkpoints;
 
-    ContextModelStore(Context context) {
-        file = new File(new File(context.getNoBackupFilesDir(), "context-model"), FILENAME);
+    ContextModelStore(Context context, boolean light) {
+        name = light ? "Qwen3-1.7B Q4_K_M" : NAME;
+        sizeLabel = light ? "1,28 GB" : "2,50 GB";
+        sha256 = light ? "d2387ca2dbfee2ffabce7120d3770dadca0b293052bc2f0e138fdc940d9bc7b5" : SHA256;
+        filename = light ? "Qwen3-1.7B-Q4_K_M.gguf" : FILENAME;
+        url = light ? "https://huggingface.co/ggml-org/Qwen3-1.7B-GGUF/resolve/main/" + filename : URL;
+        maxBytes = light ? 1_350_000_000L : MAX_BYTES;
+        file = new File(new File(context.getNoBackupFilesDir(), "context-model"), filename);
         checkpoints = new File(context.getCacheDir(), "context-translation");
     }
 
@@ -46,8 +59,8 @@ final class ContextModelStore {
 
     ModelExport exportModel() throws IOException {
         if (!installed()) throw new IOException("Qwen chưa được cài.");
-        return new ModelExport(FILENAME, "application/octet-stream",
-                java.util.Collections.singletonMap(FILENAME, file));
+        return new ModelExport(filename, "application/octet-stream",
+                java.util.Collections.singletonMap(filename, file));
     }
 
     static boolean supported() {
@@ -55,7 +68,7 @@ final class ContextModelStore {
     }
 
     private File partial() {
-        return new File(file.getParentFile(), FILENAME + ".part");
+        return new File(file.getParentFile(), filename + ".part");
     }
 
     void importModel(android.content.ContentResolver resolver, android.net.Uri uri,
@@ -63,11 +76,11 @@ final class ContextModelStore {
         synchronized (DOWNLOAD_LOCK) {
             File directory = file.getParentFile();
             Files.createDirectories(directory.toPath());
-            File staging = new File(directory, FILENAME + ".import");
+            File staging = new File(directory, filename + ".import");
             try (android.content.res.AssetFileDescriptor descriptor = resolver.openAssetFileDescriptor(uri, "r")) {
                 if (descriptor == null) throw new IOException("Không đọc được tệp Qwen.");
                 long size = descriptor.getLength();
-                if (size > MAX_BYTES) throw new IOException("Tệp Qwen vượt kích thước cho phép.");
+                if (size > maxBytes) throw new IOException("Tệp Qwen vượt kích thước cho phép.");
                 if (size >= 0 && directory.getUsableSpace() + staging.length() < size) {
                     throw new IOException("Không đủ dung lượng trống để nhập Qwen.");
                 }
@@ -80,7 +93,7 @@ final class ContextModelStore {
                     while ((count = in.read(buffer)) != -1) {
                         checkCancelled(cancelled);
                         written += count;
-                        if (written > MAX_BYTES) throw new IOException("Tệp Qwen vượt kích thước cho phép.");
+                        if (written > maxBytes) throw new IOException("Tệp Qwen vượt kích thước cho phép.");
                         out.write(buffer, 0, count);
                         hash.update(buffer, 0, count);
                         if (written - reported >= 4_000_000) {
@@ -90,7 +103,7 @@ final class ContextModelStore {
                     }
                     out.getFD().sync();
                 }
-                if (!SHA256.equals(hex(hash.digest()))) throw new IOException("SHA-256 của tệp Qwen không khớp.");
+                if (!sha256.equals(hex(hash.digest()))) throw new IOException("SHA-256 của tệp Qwen không khớp.");
                 checkCancelled(cancelled);
                 Files.move(staging.toPath(), file.toPath(), java.nio.file.StandardCopyOption.ATOMIC_MOVE,
                         java.nio.file.StandardCopyOption.REPLACE_EXISTING);
@@ -117,7 +130,7 @@ final class ContextModelStore {
         if (!directory.isDirectory() && !directory.mkdirs()) throw new IOException("Không tạo được thư mục model.");
         File partial = partial();
         long offset = partial.length();
-        if (offset >= MAX_BYTES) {
+        if (offset >= maxBytes) {
             Files.delete(partial.toPath());
             offset = 0;
         }
@@ -127,7 +140,7 @@ final class ContextModelStore {
 
     private boolean transfer(File partial, long offset, BooleanSupplier cancelled, Progress progress) throws Exception {
         checkCancelled(cancelled);
-        HttpsURLConnection connection = (HttpsURLConnection) new URL(URL).openConnection();
+        HttpsURLConnection connection = (HttpsURLConnection) new URL(url).openConnection();
         try {
             connection.setConnectTimeout(20000);
             connection.setReadTimeout(15000);
@@ -137,7 +150,7 @@ final class ContextModelStore {
             checkCancelled(cancelled);
             long size;
             if (offset > 0 && status == 206) {
-                size = resumedSize(connection.getHeaderField("Content-Range"), offset);
+                size = resumedSize(connection.getHeaderField("Content-Range"), offset, maxBytes);
                 if (size < 0) return false;
             } else if (status == 200) {
                 offset = 0;
@@ -145,7 +158,7 @@ final class ContextModelStore {
             } else if (offset > 0 && status == 416) {
                 MessageDigest digest = MessageDigest.getInstance("SHA-256");
                 hashPartial(partial, digest, new byte[128 * 1024], cancelled);
-                if (SHA256.equals(hex(digest.digest()))) {
+                if (sha256.equals(hex(digest.digest()))) {
                     install(partial, cancelled);
                     return true;
                 }
@@ -153,8 +166,8 @@ final class ContextModelStore {
             } else {
                 throw new IOException("Máy chủ không trả về tệp model.");
             }
-            if (size > MAX_BYTES) throw new IOException("Tệp model vượt kích thước dự kiến.");
-            long required = (size > 0 ? size : MAX_BYTES) - offset;
+            if (size > maxBytes) throw new IOException("Tệp model vượt kích thước dự kiến.");
+            long required = (size > 0 ? size : maxBytes) - offset;
             long available = partial.getParentFile().getUsableSpace() + (offset == 0 ? partial.length() : 0);
             if (available < required) throw new IOException("Không đủ dung lượng trống để tải model.");
 
@@ -169,7 +182,7 @@ final class ContextModelStore {
                 int count;
                 while ((count = input.read(buffer)) != -1) {
                     checkCancelled(cancelled);
-                    if (written + count > (size > 0 ? size : MAX_BYTES)) {
+                    if (written + count > (size > 0 ? size : maxBytes)) {
                         throw new IOException("Tệp model vượt kích thước dự kiến.");
                     }
                     output.write(buffer, 0, count);
@@ -185,7 +198,7 @@ final class ContextModelStore {
             }
             checkCancelled(cancelled);
             if (size > 0 && written != size) throw new IOException("Tải model bị gián đoạn. Hãy tiếp tục tải.");
-            if (!SHA256.equals(hex(digest.digest()))) {
+            if (!sha256.equals(hex(digest.digest()))) {
                 Files.deleteIfExists(partial.toPath());
                 throw new IOException("Mã kiểm tra model không khớp. Hãy tải lại.");
             }
@@ -213,6 +226,10 @@ final class ContextModelStore {
     }
 
     static long resumedSize(String header, long offset) {
+        return resumedSize(header, offset, MAX_BYTES);
+    }
+
+    private static long resumedSize(String header, long offset, long maxBytes) {
         if (header == null) return -1;
         Matcher range = CONTENT_RANGE.matcher(header);
         if (!range.matches()) return -1;
@@ -220,7 +237,7 @@ final class ContextModelStore {
             long start = Long.parseLong(range.group(1));
             long end = Long.parseLong(range.group(2));
             long total = Long.parseLong(range.group(3));
-            return start == offset && end >= start && end == total - 1 && total <= MAX_BYTES ? total : -1;
+            return start == offset && end >= start && end == total - 1 && total <= maxBytes ? total : -1;
         } catch (NumberFormatException malformed) {
             return -1;
         }

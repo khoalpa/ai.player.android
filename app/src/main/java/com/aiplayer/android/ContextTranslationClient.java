@@ -62,6 +62,7 @@ final class ContextTranslationClient implements AutoCloseable {
     private final ContextModelStore store;
     private final String glossary;
     private final AppSettings.QwenProcessor processor;
+    private boolean gpuActive;
     private volatile String processorStatus = "";
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private volatile long playbackPositionMs;
@@ -92,38 +93,6 @@ final class ContextTranslationClient implements AutoCloseable {
 
     String processorLabel() {
         return processorStatus;
-    }
-
-    Task<Void> prepareDirect() {
-        return ExecutorTasks.submit(executor, () -> {
-            try {
-                System.loadLibrary("aiplayer_context");
-                loadModel();
-                return null;
-            } catch (LinkageError error) {
-                throw new IOException("Qwen native runtime unavailable.", error);
-            }
-        });
-    }
-
-    Task<String> translateDirect(String source, String target, String text) {
-        return ExecutorTasks.submit(executor, () -> {
-            List<String> translations = new ArrayList<>();
-            for (String fragment : splitCue(text)) {
-                JSONObject input = new JSONObject().put("source_language", source)
-                        .put("target_language", target).put("source_text", fragment);
-                JSONObject output = request("Translate source_text directly from source_language to "
-                        + "target_language. Preserve meaning, names and tone. Return only a JSON object "
-                        + "with one nonempty string field named text containing the translation.",
-                        input, "root ::= \"{\\\"text\\\":\" string \"}\"\n" + STRING_RULE, 768);
-                Object value = output.get("text");
-                if (!(value instanceof String) || ((String) value).trim().isEmpty()) {
-                    throw new InvalidTranslationException("Empty direct translation.");
-                }
-                translations.add(((String) value).trim());
-            }
-            return String.join(" ", translations);
-        });
     }
 
     void prioritize(long positionMs) {
@@ -266,6 +235,7 @@ final class ContextTranslationClient implements AutoCloseable {
             completedGroups++;
         }
         if (analysisTotal > 0) contextProgress.accept(completedGroups, analysisTotal);
+        boolean canAdvanceCheckpoint = true;
         for (int chunk = completedGroups; chunk < analysisTotal; chunk++) {
             int end = analysis.get(chunk + 1);
             stage = "Phân tích ngữ cảnh nhóm " + (chunk + 1) + "/" + analysisTotal;
@@ -273,9 +243,12 @@ final class ContextTranslationClient implements AutoCloseable {
                     + " nhóm. Chưa bắt đầu hiệu đính.";
             started = SystemClock.elapsedRealtime();
             try {
-                analyzeGroup(sources, Math.max(analyzed, analysis.get(chunk)), end, notes);
+                boolean complete = analyzeGroup(sources, Math.max(analyzed, analysis.get(chunk)), end, notes);
                 guide = renderGuide(notes);
-                saveCheckpoint(guideCheckpoint, savedGuide.put("notes", notes).put("analyzed_cues", end));
+                canAdvanceCheckpoint &= complete;
+                if (canAdvanceCheckpoint) {
+                    saveCheckpoint(guideCheckpoint, savedGuide.put("notes", notes).put("analyzed_cues", end));
+                }
                 contextProgress.accept(chunk + 1, analysisTotal);
             } finally {
                 logDuration("guide_update", started);
@@ -390,7 +363,7 @@ final class ContextTranslationClient implements AutoCloseable {
         for (int i = 0; i < sources.size(); i++) {
             int length = sources.get(i).length();
             int start = boundaries.get(boundaries.size() - 1);
-            if (i - start >= maxCues || size + length > maxChars) {
+            if (i > start && (i - start >= maxCues || size + length > maxChars)) {
                 boundaries.add(i);
                 size = 0;
             }
@@ -430,18 +403,23 @@ final class ContextTranslationClient implements AutoCloseable {
                 .put("dialogue", dialogue(sources, start, end));
     }
 
-    private void analyzeGroup(List<String> sources, int start, int end, JSONArray notes) throws Exception {
+    private boolean analyzeGroup(List<String> sources, int start, int end, JSONArray notes) throws Exception {
         try {
             JSONObject input = analysisInput(sources, start, end, renderGuide(notes));
             JSONArray updates = request(ANALYSIS_INSTRUCTIONS, input, guideGrammar(start, end), GUIDE_TOKENS)
                     .getJSONArray("notes");
             mergeNotes(notes, updates, start, end);
+            return true;
         } catch (JSONException | ModelWindowException overflow) {
-            if (end - start <= 1) throw overflow;
+            if (end - start <= 1) {
+                logFailure(overflow);
+                return false;
+            }
             Log.i(TAG, "guide_retry cues=" + (end - start));
             int middle = start + (end - start) / 2;
-            analyzeGroup(sources, start, middle, notes);
-            analyzeGroup(sources, middle, end, notes);
+            boolean firstComplete = analyzeGroup(sources, start, middle, notes);
+            boolean secondComplete = analyzeGroup(sources, middle, end, notes);
+            return firstComplete && secondComplete;
         }
     }
 
@@ -523,8 +501,14 @@ final class ContextTranslationClient implements AutoCloseable {
                 return;
             }
             int only = requested.get(0);
-            if (start == only && end == only + 1) throw overflow;
-            translations = translateGroupOnce(sources, requested, guide, only, only + 1, false, drafts);
+            if (start == only && end == only + 1) {
+                logFailure(overflow);
+                // Leave the existing draft pending and preserve the result slot for a retry.
+                complete.accept(java.util.Collections.singletonList(null));
+                return;
+            }
+            translateGroup(sources, requested, guide, only, only + 1, drafts, complete);
+            return;
         }
         List<Integer> rejected = new ArrayList<>();
         List<Integer> positions = new ArrayList<>();
@@ -653,6 +637,7 @@ final class ContextTranslationClient implements AutoCloseable {
         boolean preferGpu = processor == AppSettings.QwenProcessor.GPU;
         boolean gpuAvailable = preferGpu && isGpuAvailable();
         long engine = gpuAvailable ? openModel(path, true) : 0;
+        boolean openedOnGpu = engine != 0;
         String status = "GPU (Vulkan)";
         if (engine == 0) {
             synchronized (this) {
@@ -669,15 +654,34 @@ final class ContextTranslationClient implements AutoCloseable {
                 throw new IOException("Đã hủy dịch theo ngữ cảnh.");
             }
             active = engine;
+            gpuActive = openedOnGpu;
             processorStatus = status;
         }
     }
 
     private JSONObject request(String instructions, JSONObject input, String grammar, int maxTokens) throws Exception {
-        byte[] result = generateBounded(modelHandle(), prompt(instructions, input), grammar,
-                Math.max(1, Math.min(4, Runtime.getRuntime().availableProcessors())), maxTokens);
+        byte[] inputBytes = prompt(instructions, input);
+        int threads = Math.max(1, Math.min(4, Runtime.getRuntime().availableProcessors()));
+        byte[] result;
+        try {
+            result = generateBounded(modelHandle(), inputBytes, grammar, threads, maxTokens);
+        } catch (IOException failure) {
+            switchToCpu(failure);
+            result = generateBounded(modelHandle(), inputBytes, grammar, threads, maxTokens);
+        }
         if (result == null) throw new ModelWindowException();
         return new JSONObject(new String(result, StandardCharsets.UTF_8));
+    }
+
+    private synchronized void switchToCpu(IOException failure) throws IOException {
+        if (closed || !gpuActive) throw failure;
+        android.util.Log.w("ContextTranslation", "Vulkan inference failed. Retrying the current request on CPU.", failure);
+        freeModel(active);
+        active = 0;
+        gpuActive = false;
+        active = openModel(store.file.getAbsolutePath(), false);
+        if (active == 0) throw new IOException("Không mở được model Qwen trên CPU sau lỗi Vulkan.", failure);
+        processorStatus = "CPU (lỗi xử lý Vulkan)";
     }
 
     private synchronized long modelHandle() throws IOException {
@@ -709,7 +713,7 @@ final class ContextTranslationClient implements AutoCloseable {
 
     private AtomicFile checkpoint(List<String> sources, JSONArray targets) throws Exception {
         MessageDigest digest = MessageDigest.getInstance("SHA-256");
-        String identity = new JSONArray().put("qwen-context-v7").put(ContextModelStore.SHA256).put(glossary)
+        String identity = new JSONArray().put("qwen-context-v7").put(store.sha256).put(glossary)
                 .put(new JSONArray(sources)).put(targets).toString();
         String name = ContextModelStore.hex(digest.digest(identity.getBytes(StandardCharsets.UTF_8)));
         return new AtomicFile(new File(store.checkpoints, name + ".json"));

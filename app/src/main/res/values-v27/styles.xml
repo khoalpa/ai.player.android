@@ -14,6 +14,7 @@
         <item name="android:textColorSecondary">@color/ai_muted</item>
         <item name="playerSelection">#16324A</item>
         <item name="playerAccentText">#000000</item>
+        <item name="playerCpuTrend">#82B1FF</item>
         <item name="playerButtonSurface">#262626</item>
         <item name="playerButtonDisabled">#171717</item>
         <item name="playerButtonDisabledInk">#929292</item>
@@ -44,6 +45,7 @@
         <item name="android:textColorSecondary">#536176</item>
         <item name="playerSelection">#E6EDFF</item>
         <item name="playerAccentText">#FFFFFF</item>
+        <item name="playerCpuTrend">#245DB5</item>
         <item name="playerButtonSurface">#E5E9F0</item>
         <item name="playerButtonDisabled">#EEF1F5</item>
         <item name="playerButtonDisabledInk">#64748B</item>

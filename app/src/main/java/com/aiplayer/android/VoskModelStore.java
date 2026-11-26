@@ -13,6 +13,8 @@ import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -73,6 +75,18 @@ final class VoskModelStore {
     static String largeModelKey(String language) {
         String key = language + "-large";
         return LARGE_MODELS.containsKey(key) ? key : null;
+    }
+
+    List<String> availableModelKeys(String language) {
+        List<String> models = new ArrayList<>(2);
+        String large = largeModelKey(language);
+        if (large != null && (isDownloaded(large) || isBundled(large))) {
+            models.add(large);
+        }
+        if (isDownloaded(language) || isBundled(language)) {
+            models.add(language);
+        }
+        return models;
     }
 
     static String modelVersion(String sourceLanguage) {

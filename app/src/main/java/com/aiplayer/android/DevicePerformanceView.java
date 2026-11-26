@@ -83,8 +83,8 @@ final class DevicePerformanceView extends LinearLayout {
         addView(details, new LayoutParams(-1, -2));
         hardware = label("", 12, false);
         details.addView(hardware);
-        cpuTrend = addTrend("CPU của AI Player · 60 giây", R.attr.playerAccentText);
-        ramTrend = addTrend("RAM khả dụng · 60 giây", R.attr.playerIconSuccess);
+        cpuTrend = addTrend("CPU của AI Player · 60 giây", R.attr.playerCpuTrend, 3);
+        ramTrend = addTrend("RAM khả dụng · 60 giây", R.attr.playerIconSuccess, 2);
         appRam = label("", 12, false);
         details.addView(appRam);
         qwen = label("Chưa có lượt dịch Qwen trong phiên này", 12, false);
@@ -203,11 +203,11 @@ final class DevicePerformanceView extends LinearLayout {
         return value;
     }
 
-    private Trend addTrend(String name, int colorAttr) {
+    private Trend addTrend(String name, int colorAttr, int markerRadiusDp) {
         TextView heading = label(name, 12, true);
         heading.setPadding(0, dp(8), 0, 0);
         details.addView(heading);
-        Trend trend = new Trend(PlayerAppearance.color(getContext(), colorAttr));
+        Trend trend = new Trend(PlayerAppearance.color(getContext(), colorAttr), dp(markerRadiusDp));
         details.addView(trend, new LayoutParams(-1, dp(42)));
         return trend;
     }
@@ -269,12 +269,13 @@ final class DevicePerformanceView extends LinearLayout {
         private final float[] values = new float[CHART_POINTS];
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Path path = new Path();
-        private final int color, grid;
+        private final int color, grid, markerRadius;
         private int next, count;
 
-        Trend(int color) {
+        Trend(int color, int markerRadius) {
             super(DevicePerformanceView.this.getContext());
             this.color = color;
+            this.markerRadius = markerRadius;
             grid = PlayerAppearance.color(getContext(), android.R.attr.textColorSecondary);
             setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
         }
@@ -305,16 +306,19 @@ final class DevicePerformanceView extends LinearLayout {
             paint.setColor(color);
             paint.setStrokeWidth(dp(2));
             path.reset();
-            float step = (getWidth() - dp(2)) / (float) (values.length - 1);
+            float endX = getWidth() - markerRadius;
+            float step = (endX - markerRadius) / (values.length - 1);
+            float y = bottom;
             for (int i = 0; i < count; i++) {
-                float x = dp(1) + step * (values.length - count + i);
+                float x = endX - step * (count - 1 - i);
                 int index = (next - count + i + values.length) % values.length;
-                float y = bottom - (bottom - top) * values[index];
+                y = bottom - (bottom - top) * values[index];
                 if (i == 0) path.moveTo(x, y);
                 else path.lineTo(x, y);
-                if (i == count - 1) canvas.drawCircle(x, y, dp(1), paint);
             }
             canvas.drawPath(path, paint);
+            paint.setStyle(Paint.Style.FILL);
+            canvas.drawCircle(endX, y, markerRadius, paint);
         }
     }
 }

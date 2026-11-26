@@ -41,11 +41,26 @@ bool aborted(void *engine) {
 }
 
 constexpr int context_tokens = 8192;
+constexpr int prompt_batch_size = 256;
+
+bool decodeTokens(llama_context *context, llama_batch_ext *batch, const llama_token *tokens,
+                  int count, llama_pos start) {
+    llama_batch_ext_clear(batch);
+    for (int i = 0; i < count; ++i) {
+        const int index = llama_batch_ext_add_token(batch, 0, tokens[i]);
+        const llama_pos position = start + i;
+        if (index < 0 || !llama_batch_ext_set_pos(batch, index, &position) ||
+            !llama_batch_ext_set_output_logits(batch, index, i == count - 1)) {
+            return false;
+        }
+    }
+    return llama_process(context, LLAMA_PROCESS_TYPE_DECODE, batch) == 0;
+}
 
 llama_context_params contextParams(Engine *engine, int threads) {
     auto params = llama_context_default_params();
     params.n_ctx = context_tokens;
-    params.n_batch = 256;
+    params.n_batch = prompt_batch_size;
     params.n_threads = threads;
     params.n_threads_batch = threads;
     params.abort_callback = aborted;
@@ -154,9 +169,13 @@ Java_com_aiplayer_android_ContextTranslationClient_generateBounded(JNIEnv *env, 
     std::unique_ptr<llama_context, decltype(&llama_free)> context(
         llama_init_from_model(engine->model.get(), contextParams(engine, threads)), llama_free);
     if (!context) return failure(env, "Could not allocate offline translation memory.");
-    for (int i = 0; i < count; i += 256) {
+    std::unique_ptr<llama_batch_ext, decltype(&llama_batch_ext_free)> batch(
+        llama_batch_ext_init(context.get()), llama_batch_ext_free);
+    if (!batch) return failure(env, "Could not allocate the offline translation batch.");
+    for (int i = 0; i < count; i += prompt_batch_size) {
         if (engine->cancelled.load() ||
-            llama_decode(context.get(), llama_batch_get_one(tokens.data() + i, std::min(256, count - i)))) {
+            !decodeTokens(context.get(), batch.get(), tokens.data() + i,
+                          std::min(prompt_batch_size, count - i), i)) {
             return failure(env, "Could not evaluate the offline translation prompt.");
         }
     }
@@ -180,7 +199,7 @@ Java_com_aiplayer_android_ContextTranslationClient_generateBounded(JNIEnv *env, 
         int length = llama_token_to_piece(vocab, token, piece, sizeof(piece), 0, false);
         if (length < 0) return failure(env, "Invalid offline subtitle token.");
         result.append(piece, length);
-        if (llama_decode(context.get(), llama_batch_get_one(&token, 1))) {
+        if (!decodeTokens(context.get(), batch.get(), &token, 1, count + generated)) {
             return failure(env, "Offline subtitle generation was interrupted.");
         }
     }
